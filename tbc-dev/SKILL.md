@@ -1,0 +1,236 @@
+---
+name: tbc-dev
+description: "TBC (TuringBitChain) blockchain development reference. Covers contract types, transaction structures, API endpoints, node ops. Use when user asks about TBC contracts, transactions, or API."
+---
+
+# TBC Development Skill
+
+TBC = Bitcoin sidechain, SHA256 PoW, UTXO model, JS/TS smart contracts.
+
+**Libraries**: `npm i tbc-lib-js tbc-contract`
+
+**GitHub 源码**:
+- 合约 SDK: https://github.com/TuringBitChain/tbc-contract
+- 基础库: https://github.com/AidenChen6/tbc-lib-js
+- 全节点: https://github.com/TuringBitChain/TBCNODE
+- 学习资料: https://github.com/TuringBitChain/LearningMaterials
+
+**API Base URLs**:
+- Mainnet: `https://api.turingbitchain.io/api/tbc/`
+- Testnet: `https://api.tbcdev.org/api/tbc/`
+- API 文档(ShowDoc): https://www.showdoc.com.cn/2598842292642718 （密码: 123123）
+- 区块浏览器: https://tbcscan.xyz
+
+---
+
+## Contract Types
+
+| Contract | Purpose | Key Methods |
+|----------|---------|-------------|
+| **FT** | Fungible token | `MintFT`, `transfer`, `batchTransfer`, `mergeFT` |
+| **NFT** | Non-fungible token | `createCollection`, `createNFT`, `transferNFT`, `batchCreateNFT` |
+| **poolNFT** | AMM liquidity pool v1 | `createPoolNFT`, `initPoolNFT`, `increaseLP`, `consumeLP`, `swaptoToken_baseTBC`, `swaptoTBC_baseToken` |
+| **poolNFT2** | Pool v2 (lock, fee plans) | Same + `createPoolNftWithLock`, `burnFTLP`, lock time support |
+| **OrderBook** | On-chain DEX | `buildSellOrderTX`, `buildBuyOrderTX`, `matchOrder`, cancel orders |
+| **MultiSig** | M-of-N multisig (1-6 sigs, 3-10 keys) | `createMultiSigWallet`, `buildMultiSigTransaction_sendTBC/transferFT`, sign + finish |
+| **HTLC** | Hash time-lock (atomic swap) | `deployHTLC`, `withdraw` (preimage), `refund` (timeout) |
+| **StableCoin** | Admin-controlled FT + NFT cert | `createCoin`, `mintCoin`, `burnCoin` |
+
+## 交易分析流程（核心能力）
+
+当用户给你一个 txid 要求分析时，按以下步骤执行：
+
+> **⚠️ 禁止用 browser 打开区块浏览器（如 tbcscan.xyz）来"看一眼"就结束。** 区块浏览器只显示表面信息，无法判断合约类型和事件。必须用 API 拿原始交易数据，然后结合合约结构自己分析判断。这才是你作为 TBC 开发助手的核心能力。
+>
+> **⚠️ 分析交易时必须一次性完成全部步骤给出最终结论，不要中途停下来问用户"要不要继续分析"。** 用户让你分析交易就是要完整结果：交易类型 + 具体事件 + 涉及地址 + 金额 + 代币信息，全部查完一起说。
+
+### Step 1: 获取交易数据
+
+用 `nodes run` 执行 curl（不要用 browser，不要用 web_fetch）：
+```
+["curl", "-s", "https://api.turingbitchain.io/api/tbc/decode/txid/{txid}"]
+```
+返回包含完整的 vin/vout/scriptPubKey 信息。如需原始 hex 可用 `/txraw/txid/{txid}`。
+
+如果是 FT 相关交易，追加调用 `/ft/decode/txid/{txid}` 获取可读的 contract_id、地址、金额。
+
+### Step 2: 判断交易类型
+
+检查 vout 的 scriptPubKey，按以下优先级匹配：
+
+**1) FT 交易** — vout 的 hex 末尾包含 `4654617065`（"FTape" 的 hex）
+- **FT Mint**：只有 1 组 Code+Tape 输出（无 FT 类型的 vin），Code 值 = 500sat(0.000005 TBC)
+- **FT Transfer**：有 FT 输入 → FT 输出，可能有找零 Code+Tape
+- **FT Batch Transfer**：多个接收者的 Code+Tape 对
+- **FT Merge**：多个 FT 输入 → 1 个 FT 输出（合并 UTXO）
+- 进一步用 `/ft/decode/txid/{txid}` 获取 contract_id、地址、金额等可读信息
+- 再用 `/ft/info/contract/{contract_id}` 获取代币名称、符号、精度、总量
+
+**2) NFT 交易** — vout 的 hex 末尾包含 `4e54617065`（"NTape"）或 `4e486f6c64`（"NHold"）
+- **NFT Collection Create**：Tape(0sat) + 多个 Mint script(100sat each)
+- **NFT Mint**：Code(200sat) + Hold(100sat) + Tape(0sat, "NTape")
+- **NFT Transfer**：vin 有 Code+Hold → vout 有 Code+Hold+Tape，holder 地址改变
+- **NFT Batch Mint**：多组 Code+Hold+Tape
+- Tape 的 OP_RETURN 数据是 hex 编码的 JSON，解码后含 name/description/attributes
+
+**3) Pool 交易** — vout[0] 有超长 nonstandard 脚本（Pool NFT 合约脚本），且末尾含 `6269736f6e`（"bison"）+ `32436f6465`（"2Code"）
+- **Pool Create**：vin 无 Pool NFT → vout 有 Pool NFT script
+- **Pool Init**：首次注入流动性（FT + TBC）
+- **Pool Add LP**：增加流动性，产生 LP token
+- **Pool Remove LP**：消耗 LP，取回 FT + TBC
+- **Pool Swap（TBC→FT）**：Pool 的 TBC 余额增加，FT 余额减少
+- **Pool Swap（FT→TBC）**：Pool 的 FT 余额增加，TBC 余额减少
+- 用 `/pool/poolinfo/poolid/{pool_contract_id}` 获取池子状态（tbc_balance, token_balance, lp_balance）
+- swap 金额通过比较 vin/vout 的 Pool NFT 关联值变化计算
+
+**4) OrderBook 交易** — vout 含 saleVolume/unitPrice/feeRate（3 个 8 字节 LE 值）的脚本
+- **Sell Order**：创建卖单
+- **Buy Order**：创建买单
+- **Cancel Order**：撤销挂单
+- **Match Order**：撮合成交
+
+**5) MultiSig 交易** — vout 有 P2SH 脚本 `OP_HASH160 <20B hash> OP_EQUAL`（type: "scripthash"）
+- 用 `/multisig/multisigaddress/address/{a}` 查询多签钱包信息
+
+**6) HTLC 交易** — 脚本包含 `OP_IF OP_SHA256` 分支结构
+- **Deploy**：创建 HTLC 合约
+- **Withdraw**：提供 preimage 取款
+- **Refund**：超时退款
+
+**7) 纯 TBC 转账** — 所有 vout 都是标准 P2PKH（type: "pubkeyhash"），无合约标记
+
+### Step 3: 组装结果（必须做完才回复用户）
+
+Step 1-3 是一个完整流程，**必须全部执行完才回复用户**。不要执行到一半就发消息问"需要继续吗"。
+
+最终输出应包含：
+- **交易类型**：如 "FT Transfer" / "Pool Swap (TBC→FT)"
+- **关键地址**：发送方、接收方
+- **代币信息**（如适用）：contract_id、name、symbol、decimal
+- **金额**：FT 数量（注意 decimal 转换）、TBC 数量
+- **池子信息**（如适用）：pool_id、swap 方向、换入/换出金额
+
+**示例输出**：
+> 这是一笔 **FT Transfer** 交易。地址 `1ABC...` 向 `1XYZ...` 转了 **300,000 SATOSHI**（contract: `a2d7...86f3`，精度 6 位，即 300 枚）。
+
+> 这是一笔 **Pool Swap (TBC→FT)** 交易。用户通过 Pool `d1ab...dfc6` 用 **5 TBC** 换得 **12,500 SpaceDoge**。
+
+## Script Hex 标记速查
+
+| 标记 | Hex | 含义 |
+|------|-----|------|
+| FTape | `4654617065` | FT Tape 输出标识 |
+| NTape | `4e54617065` | NFT Tape 输出标识 |
+| NHold | `4e486f6c64` | NFT Hold 输出标识 |
+| bison | `6269736f6e` | Pool NFT 脚本标识 |
+| 2Code | `32436f6465` | 合约 Code 输出标识 |
+
+## Script Structure (Quick Ref)
+
+**FT Code**: `OP_DUP OP_HASH160 <pubKeyHash:20B> OP_EQUALVERIFY OP_CHECKSIG OP_RETURN <contractHash:32B>`
+**FT Tape**: `OP_FALSE OP_RETURN <amount:48B = 6×uint64LE> <decimal:1B> <name> <symbol> "FTape"`
+**NFT Hold**: `... OP_RETURN "V0 Curr NHold"`
+**NFT Tape**: `OP_FALSE OP_RETURN <JSON hex> "NTape"`
+
+FT amount = 6 slots of uint64LE (supports merging up to 6 UTXOs). Each FT output: Code=500sat, Tape=0sat. Each NFT output: Code=200sat, Hold=100sat.
+
+## Pool AMM Formula
+
+```
+output = (input × 997 × outReserve) / (inReserve × 1000 + input × 997)
+```
+0.3% fee. Pool v2 adds `serviceRate`, `lpPlan` (1 or 2), optional lock time.
+
+## API Endpoints (Complete)
+
+All paths relative to base URL. Pagination max: 500. Full docs: `skills/tbc-dev/api-reference.md`
+
+**TBC 原生**:
+- `/decode/txid/{txid}` — 通用交易解码（任意类型交易）
+- `/txraw/txid/{txid}` — 获取原始交易数据
+- `/balance/address/{a}` | `/utxo/address/{a}?limit=N` | `/addressinfo/address/{a}`
+- `/history/address/{a}/start/{s}/end/{e}` | `/history/scriptpubkeyhash/{h}/start/{s}/end/{e}`
+- `/utxo/scriptpubkeyhash/{h}`
+- `/broadcasttx` (POST) | `/broadcasttxs` (POST 批量)
+- `/blockByHeight/height/{h}` | `/blockByHash/hash/{h}` | `/recentblocks/start/{s}/end/{e}`
+- `/txbyblockhash/blockhash/{h}/start/{s}/end/{e}` | `/txbyblockheight/height/{h}/start/{s}/end/{e}`
+- `/mempoolinfo` | `/mempooltxs` | `/nodeinfo` | `/chainstate` | `/health`
+
+**FT 代币**:
+- `/ft/decode/txid/{txid}` — FT 交易解码
+- `/ft/info/contract/{id}` — 获取 FT 详情（含 code_script, tape_script）
+- `/ft/tokenbalance/address/{a}/contract/{id}` | `/ft/tokenbalance/combinescript/{cs}/contract/{id}`
+- `/ft/utxo/address/{a}/contract/{id}?limit=N` | `/ft/utxo/combinescript/{cs}/contract/{id}?limit=N`
+- `/ft/history/address/{a}/contract/{id}/start/{s}/end/{e}` | `/ft/history/combinescript/{cs}/contract/{id}/start/{s}/end/{e}`
+- `/ft/allhistory/address/{a}/start/{s}/end/{e}` | `/ft/allhistory/combinescript/{cs}/start/{s}/end/{e}`
+- `/ft/tokenlist/address/{a}` | `/ft/tokenlist/combinescript/{cs}`
+- `/ft/rank/contract/{id}/start/{s}/end/{e}` — 持币人排行
+
+**NFT**:
+- `/nft/nftinfo/nftid/{id}` | `/nft/collectioninfo/collectionid/{id}`
+- `/nft/nftbyaddress/address/{a}/start/{s}/end/{e}` | `/nft/collectionbyaddress/address/{a}/start/{s}/end/{e}`
+- `/nft/nftbycollection/collectionid/{id}/start/{s}/end/{e}`
+- `/nft/history/address/{a}/nftid/{id}/start/{s}/end/{e}` | `/nft/allhistory/address/{a}/start/{s}/end/{e}`
+- `/nft/collectionlist/start/{s}/end/{e}` | `/nft/nftlist/start/{s}/end/{e}`
+- `/nft/utxo/scriptpubkeyhash/{h}`
+
+**Pool**: `/pool/poolinfo/poolid/{id}` | `/pool/poollist/start/{s}/end/{e}` | `/pool/lputxo/scriptpubkeyhash/{h}`
+
+**多签**: `/multisig/multisigaddress/address/{a}`
+
+## SDK API Methods (Key)
+
+`API.fetchUTXO(privateKey, amount, network)` | `API.fetchFtUTXOs(contractTxid, addr, codeScript, network, amountBN)` | `API.fetchFtInfo(contractTxid, network)` | `API.fetchTXraw(txid, network)` | `API.fetchFtPrePreTxData(preTX, outputIndex, network)` | `API.broadcastTXraw(txraw, network)` | `API.broadcastTXsraw(txraws, network)` | `buildUTXO(tx, vout, isFT)` | `parseDecimalToBigInt(amount, decimal)`
+
+## Node Deployment (Quick)
+
+Build: `git clone https://github.com/turingbitchain/TBCNODE.git && cd TBCNODE && mkdir build && cd build && cmake .. && make -j$(nproc)`
+RPC: `tbc-cli getinfo | getblockcount | getblockhash <h> | getrawtransaction <txid> | sendrawtransaction <hex>`
+Key config: `excessiveblocksize=10000000000`, `txindex=1`, `rpcport=8332`
+
+---
+
+## Full Code Examples（写代码时必读）
+
+**当用户要求写任何 TBC 相关代码时，先读 `skills/tbc-dev/code-reference.md`**，不要凭记忆写。里面有完整可运行的 TypeScript 代码。
+
+| # | 内容 | 关键方法 |
+|---|------|---------|
+| 1 | TBC 转账 | `tbc.Transaction` |
+| 2 | FT 铸造 | `FT.MintFT` |
+| 3 | FT 转账 | `FT.transfer` |
+| 4 | FT 批量转账 | `FT.batchTransfer` |
+| 5 | FT 合并 UTXO | `FT.mergeFT` |
+| 6 | NFT 创建合集 | `NFT.createCollection` |
+| 7 | NFT 铸造 | `NFT.createNFT` |
+| 8 | NFT 转账 | `NFT.transferNFT` |
+| 9 | NFT 批量铸造 | `NFT.batchCreateNFT` |
+| 10 | Pool v1 完整生命周期 | `createPoolNFT` → `initPoolNFT` → `increaseLP` / `consumeLP` → `swaptoToken_baseTBC` / `swaptoTBC_baseToken` |
+| 11 | Pool v2 (Lock/Fee) | 同上 + `createPoolNftWithLock`, `burnFTLP`, lockTime |
+| 12 | Pool Swap 高级（本地 UTXO） | 跳过 API 直接构造 swap |
+| 13 | OrderBook DEX | `buildSellOrderTX` / `buildBuyOrderTX` / `matchOrder` / cancel |
+| 14 | MultiSig 多签 | TBC 转账 + FT 转账（M-of-N） |
+| 15 | Memo / TimeLock | 备注转账 + 时间锁转账 |
+| 16 | buildUTXO 工具 | 从 TX 构造 UTXO 对象 |
+
+> **`code-reference.md` 里没有覆盖的情况**（如 HTLC、StableCoin、复杂组合交易）：
+> 去 GitHub 源码看具体实现 → https://github.com/TuringBitChain/tbc-contract/tree/main/lib/contract
+> 每个合约类型一个文件（`ft.ts`, `poolNFT.ts`, `orderBook.ts`, `multiSig.ts`, `htlc.ts`, `stableCoin.ts` 等）。
+
+## Skill 文件结构（发给别人时全部包含）
+
+| 文件 | 内容 |
+|------|------|
+| `SKILL.md` | 主文件（你正在看的这个） |
+| `code-reference.md` | 16 种交易类型完整 TypeScript 代码 |
+| `api-reference.md` | API 全量文档（端点、参数、返回格式） |
+
+## 深入学习资源
+
+需要更底层的合约实现细节时，去 GitHub 看源码：
+- **合约代码**: https://github.com/TuringBitChain/tbc-contract → `lib/contract/` 目录下每个合约一个文件
+- **FT 合约**: `lib/contract/ft.ts` — 铸造/转账/批量/合并的完整实现
+- **Pool 合约**: `lib/contract/poolNFT.ts` / `poolNFT2.0.ts` — AMM 池子全生命周期
+- **OrderBook**: `lib/contract/orderBook.ts` — 链上 DEX 挂单/撮合
+- **MultiSig**: `lib/contract/multiSig.ts` — 多签钱包
+- **API 封装**: `lib/api/api.ts` — 所有 API 调用方法的源码
