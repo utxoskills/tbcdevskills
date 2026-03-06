@@ -1144,6 +1144,226 @@ Fan-in:  N 个 UTXO → 1 笔交易合并（需要所有 UTXO 都可用）
 
 **反模式**: 所有操作串联在一个 UTXO 上（像账户模型一样用单地址收发），完全丧失并行优势。
 
+## TuringWallet 浏览器插件钱包 API
+
+DApp 通过 `window.Turing` 对象（或 `useTuringWallet()` hook）与 TuringWallet 插件交互。用户无需暴露私钥，钱包负责签名和广播。
+
+**文档**: https://docs.turingwallet.xyz/en/
+
+### 连接与信息
+
+```typescript
+// 连接钱包（弹出授权窗口）
+const { tbcAddress, btcAddress, ethAddress, bnbAddress } = await Turing.connect();
+// BVM 账户返回 { tbcAddress, btcAddress }, EVM 账户返回 { ethAddress, bnbAddress }
+
+// 断开连接
+await Turing.disconnect();
+
+// 检查连接状态
+const isConnected: boolean = await Turing.isConnected();
+
+// 获取公钥
+const { tbcPubKey } = await Turing.getPubKey();
+
+// 获取地址（同 connect 返回结构）
+const addresses = await Turing.getAddress();
+
+// 获取钱包信息
+const { name, platform, version } = await Turing.getInfo();
+// 例: { name: "Turing", platform: "android", version: "1.0.0" }
+```
+
+### 消息签名与加密
+
+```typescript
+// 签名消息 (encoding: "utf-8" | "base64" | "hex")
+const { address, pubkey, sig, message } = await Turing.signMessage({
+  message: "hello world",
+  encoding: "base64"
+});
+// 验证签名:
+// import * as tbc from "tbc-lib-js";
+// const isValid = tbc.Message.verify(Buffer.from(message, encoding), address, sig);
+
+// 加密
+const { encryptedMessage } = await Turing.encrypt({ message: "secret" });
+
+// 解密
+const { decryptedMessage } = await Turing.decrypt({ message: encryptedMessage });
+```
+
+### sendTransaction — 一站式交易发送
+
+核心方法，通过 `flag` 字段区分交易类型。钱包自动处理 UTXO 选择、签名、广播。
+
+```typescript
+interface RequestParam {
+  flag: "P2PKH" | "COLLECTION_CREATE" | "NFT_CREATE" | "NFT_TRANSFER"
+      | "FT_MINT" | "FT_TRANSFER" | "FT_MERGE"
+      | "POOLNFT_MINT" | "POOLNFT_INIT" | "POOLNFT_LP_INCREASE"
+      | "POOLNFT_LP_CONSUME" | "POOLNFT_LP_BURN"
+      | "POOLNFT_SWAP_TO_TOKEN" | "POOLNFT_SWAP_TO_TBC"
+      | "POOLNFT_MERGE" | "FTLP_MERGE";
+  address?: string;
+  satoshis?: number;
+  collection_data?: string;       // JSON 格式
+  ft_data?: string;               // JSON 格式
+  nft_data?: string;              // JSON 格式
+  collection_id?: string;
+  nft_contract_address?: string;
+  ft_contract_address?: string;
+  tbc_amount?: number;
+  ft_amount?: number;
+  merge_times?: number;           // 1-10, 默认 10
+  poolNFT_version?: number;       // 强制为 2
+  serviceFeeRate?: number;        // 0-100, 默认 25
+  serverProvider_tag?: string;
+  lpPlan?: number;                // 1 或 2, 默认 1
+  with_lock?: boolean;
+  lpCostAddress?: string;
+  lpCostAmount?: number;
+  pubKeyLock?: string[];
+  isLockTime?: boolean;
+  lockTime?: number;              // 锁定到指定区块高度
+  domain?: string;                // API 节点域名，默认 api.turingbitchain.io
+  broadcastEnabled?: boolean;     // true=返回 txid, false=返回 txraw
+}
+
+// 返回: { txid } 或 { txraw } 或 { error }
+const { txid } = await Turing.sendTransaction([params]);
+```
+
+**各类型用法速查**:
+
+| flag | 必填参数 | 说明 |
+|------|---------|------|
+| `P2PKH` | `address`, `satoshis` | TBC 转账 |
+| `FT_MINT` | `ft_data` | 铸造 FT（返回逗号分隔的双 txraw） |
+| `FT_TRANSFER` | `ft_contract_address`, `ft_amount`, `address` | FT 转账（可选 `tbc_amount` 同时发 TBC） |
+| `FT_MERGE` | `ft_contract_address` | 合并 FT UTXO |
+| `COLLECTION_CREATE` | `collection_data` | 创建 NFT 集合 |
+| `NFT_CREATE` | `nft_data`, `collection_id` | 铸造 NFT |
+| `NFT_TRANSFER` | `nft_contract_address`, `address` | 转移 NFT |
+| `POOLNFT_MINT` | `ft_contract_address`, `serverProvider_tag` | 创建流动性池 |
+| `POOLNFT_INIT` | `nft_contract_address`, `address`, `tbc_amount`, `ft_amount` | 初始化池子 |
+| `POOLNFT_LP_INCREASE` | `nft_contract_address`, `address`, `tbc_amount` | 增加流动性 |
+| `POOLNFT_LP_CONSUME` | `nft_contract_address`, `address`, `ft_amount` | 消耗流动性 |
+| `POOLNFT_LP_BURN` | `nft_contract_address` | 销毁 LP |
+| `POOLNFT_SWAP_TO_TOKEN` | `nft_contract_address`, `address`, `tbc_amount` | TBC → FT swap |
+| `POOLNFT_SWAP_TO_TBC` | `nft_contract_address`, `address`, `ft_amount` | FT → TBC swap |
+| `POOLNFT_MERGE` | `nft_contract_address` | 合并池子 FT |
+| `FTLP_MERGE` | `nft_contract_address` | 合并 FTLP |
+
+### signTransaction — 离线签名（多笔独立交易）
+
+DApp 自己构建交易，只让钱包签名（不广播）。适用于需要精细控制交易结构的场景。
+
+```typescript
+const { sigs } = await Turing.signTransaction({
+  txraws: [tx0.uncheckedSerialize(), tx1.uncheckedSerialize()],  // N 笔交易的 raw hex
+  utxos_satoshis: [[sat0_0, sat0_1], [sat1_0]],                  // 每笔交易每个输入的 satoshis
+  script_pubkeys: [["script0_0", "script0_1"], ["script1_0"]],   // 每笔交易每个输入的 scriptPubKey
+});
+// sigs[i][j] = 第 i 笔交易第 j 个输入的签名
+
+// 填充签名到交易
+tx0.setInputScript({ inputIndex: 0 }, (tx) => {
+  const sig = sigs[0][0];
+  return new tbc.Script(
+    (sig.length/2).toString(16) + sig +
+    (pubKey.length/2).toString(16) + pubKey
+  );
+});
+```
+
+### signAssociatedTransaction — 父子交易签名（链式交易）
+
+签名有依赖关系的交易链：源交易 + N 笔子交易（每笔花费上一笔的输出）。
+
+```typescript
+interface Input {
+  txId?: string;
+  script?: string;               // hex 格式
+  satoshis?: number;
+  outputIndex: number;
+  scriptSigType: "p2pkh" | "tbc20" | "tbc20_contract" | "other";
+  unfinishedScriptSig?: string;  // "other" 类型的自定义模板，签名位用 097369676e6174757265 占位
+  ftVersion?: 1 | 2;             // tbc20_contract 类型的 FT 版本
+  contractTxId?: string;         // tbc20_contract 类型的合约 txid
+}
+
+const { txraws } = await Turing.signAssociatedTransaction({
+  sourceTxraw: sourceTransaction,     // 源交易 raw
+  sourceUtxos: [...],                  // 源交易输入（含 scriptSigType）
+  inputs: [[...], [...]],             // 子交易输入数组（按 outputIndex 引用源交易输出）
+  outputs: [[...], [...]],            // 子交易输出数组（script + satoshis）
+});
+// txraws = 组装好的完整交易链，可直接广播
+```
+
+`scriptSigType` 类型说明:
+- `p2pkh`: 标准 P2PKH 输入
+- `tbc20`: FT 合约输入（Code 脚本）
+- `tbc20_contract`: FT 合约输入（需要 ftVersion + contractTxId）
+- `other`: 自定义脚本（需提供 `unfinishedScriptSig` 模板）
+
+### sendBatchRequest — 批量请求
+
+最多 5 个独立请求并行执行，单个失败不影响其他。
+
+```typescript
+const results = await Turing.sendBatchRequest([
+  { method: "sendTransaction", params: { flag: "P2PKH", address: "...", satoshis: 10000 } },
+  { method: "signMessage", params: { message: "hello", encoding: "utf8" } },
+  { method: "encrypt", params: { message: "secret" } },
+]);
+// results[i] = 每个请求的独立返回值
+```
+
+支持方法: `sendTransaction`, `signTransaction`, `signAssociatedTransaction`, `signMessage`, `encrypt`, `decrypt`
+
+### 跨链支持
+
+**EVM (ETH/BNB)**:
+
+```typescript
+const { txid } = await Turing.evm.sendTransaction({
+  chainId: 1,        // 1=ETH, 56=BNB
+  toAddress: "0x...",
+  amount: "1000000000000000000",  // wei 单位
+  contractAddress: "0x...",       // 留空=原生币, 填入=ERC20
+  broadcastEnabled: true,
+});
+```
+
+支持: ETH/BNB 原生币 + USDT/USDC (ERC20)
+
+**BTC**:
+
+```typescript
+// 发送
+const { txid } = await Turing.btc.sendTransaction({
+  toAddress: "bc1q...",
+  amount: "100000",  // satoshis
+});
+
+// 签名 (legacy / segwit_v0 / taproot)
+const { sigs } = await Turing.btc.signTransaction({
+  txHex: "0200...",
+  type: "taproot",
+  prevOutScriptsHex: ["5120..."],
+  values: [100000],
+  leafHashesHex: [undefined],  // undefined=key path, "hex"=script path
+});
+
+// 批量
+const results = await Turing.btc.sendBatchRequest([
+  { method: "sendTransaction", params: { toAddress: "...", amount: "100000" } },
+  { method: "signTransaction", params: { txHex: "...", type: "legacy", prevOutScriptsHex: ["..."] } },
+]);
+```
+
 ## 深入学习资源
 
 需要更底层的合约实现细节时，去 GitHub 看源码：
