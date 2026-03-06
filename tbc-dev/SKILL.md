@@ -949,6 +949,201 @@ coinNftData { nftName, nftSymbol, description, coinDecimal, coinTotalSupply: big
 | TBC decimal places | 6 | parseDecimalToBigInt 中 TBC 用 6 位精度 |
 | OrderBook buy_code_dust | 300 | 买单 code 输出 satoshis |
 
+## UTXO 应用层开发模式（重要）
+
+### 核心思维模型
+
+**UTXO ≠ 余额。你拥有的是一组离散的"硬币"，每个操作都是选择、消费、创造硬币。**
+
+与账户模型（Ethereum）的根本区别：
+
+| 特性 | UTXO 模型 (TBC) | 账户模型 (ETH) |
+|------|-----------------|----------------|
+| 并行性 | **天然并行** — 不同 UTXO 独立处理 | 同账户交易必须顺序执行 (nonce) |
+| 双花防护 | **结构性** — 每个 UTXO 只能花一次 | 需要 nonce 管理 |
+| 状态验证 | SPV Merkle proof（轻量） | 需要完整状态树 |
+| 智能合约状态 | 需要显式状态携带模式 | 原生可变状态 |
+
+### 1. 双花防护（节点共识级保证）
+
+**节点如何防止双花**（源码验证）：
+- **mapNextTx**: 内存池维护 `outpoint → transaction` 映射表（txmempool.cpp:603），每个 outpoint 只映射一笔交易
+- **首见规则 (First-Seen)**: 先到的交易占据 outpoint，后到的被拒绝（`txn-mempool-conflict`）
+- **无 RBF**: TBC 完全没有 Replace-By-Fee 代码，注释写明 "Disable replacement feature for good"
+- **并行检测**: `CTxnDoubleSpendDetector`（txn_double_spend_detector.cpp）在并行验证时用互斥锁保护 outpoint 分配
+- **区块重组清理**: `removeConflictsNL` 递归删除与已确认交易冲突的内存池交易
+
+**开发者意义**: 你构建的交易一旦被节点接受进内存池，该 UTXO 就被"锁定"了，其他试图花费同一 UTXO 的交易会被拒绝。这是 UTXO 原子性的第一道防线。
+
+### 2. 交易原子性保证
+
+**UTXO 的全有或全无保证**（源码验证）：
+
+1. **交易级**: `UpdateCoins()` 先花费所有输入，再添加所有输出 — 不存在部分消费（validation.cpp:3346）
+2. **区块级**: `ConnectBlock` 在临时 `CCoinsViewCache` 上操作，只有整个区块通过验证才 `Flush()` 到主 UTXO 集（validation.cpp:4838-4882）
+3. **磁盘级**: LevelDB 使用 `DB_HEAD_BLOCKS` 二阶段提交，崩溃恢复时可重放（txdb.cpp:85-150）
+
+**开发者意义**: 一笔交易中的所有输入和输出是原子的 — 要么全部生效，要么全部无效。这意味着：
+- **原子交换**: HTLC 中，preimage 公开 + 资金转移在一笔交易中原子完成
+- **多方交易**: MultiSig 交易中，所有签名者的资金转移是原子的
+- **合约状态转换**: Pool swap 中，FT 储备变化 + TBC 储备变化 + LP 变化在一笔交易中原子完成
+
+### 3. 0-conf 链（未确认交易链）
+
+**可以花费未确认的输出**。节点通过 `CCoinsViewMemPool` 层叠视图支持：
+- `CCoinsViewDB`（磁盘 UTXO）→ `pcoinsTip`（内存缓存）→ `CCoinsViewMemPool`（加上内存池 UTXO）
+- 内存池中的交易输出可以作为新交易的输入（txmempool.cpp:1419）
+
+**TBC 的宽松限制**:
+- 祖先链最长 **10,000** 笔交易（默认，可配置）
+- 后代链最长 **10,000** 笔交易
+- 远超 BTC 的 25 笔限制
+
+**限制**: 非最终交易（nLockTime 未到）的输出**不可被花费**（`too-long-non-final-chain`）
+
+### 4. TTOR（拓扑交易排序规则）
+
+TBC 强制执行 TTOR（validation.cpp:5742）：同一区块内，如果交易 B 花费交易 A 的输出，A 必须排在 B 之前。这意味着 **同一区块内可以包含互相依赖的交易链**。
+
+### 5. OP_FALSE OP_RETURN 与 UTXO 集
+
+`OP_FALSE OP_RETURN` 输出（如 FT Tape、NFT Tape）被识别为不可花费，**永远不进入 UTXO 集**（coins.cpp:118）。这意味着：
+- 0 值的 Tape 输出不会膨胀 UTXO 集
+- 数据存储不增加节点的 UTXO 集大小
+- 只有可花费的输出（Code、Hold、标准 P2PKH）才占用 UTXO 集空间
+
+### 6. 时间锁机制（OP_PUSH_META 替代 CLTV/CSV）
+
+**关键**: Genesis 后 `OP_CHECKLOCKTIMEVERIFY` 和 `OP_CHECKSEQUENCEVERIFY` 被**禁用**（当作 NOP）。
+
+TBC 智能合约使用 **`OP_PUSH_META` 值 2**（读取 `nLockTime`）替代 CLTV 做时间锁验证：
+```
+<lockTimeHex> OP_BIN2NUM OP_2 OP_PUSH_META OP_BIN2NUM OP_LESSTHANOREQUAL OP_1 OP_EQUAL
+```
+含义：将锁定时间与交易的 nLockTime 比较，要求 nLockTime >= 锁定时间。
+
+`nLockTime` 规则（仍然有效）：
+- `< 500,000,000` → 解释为区块高度
+- `>= 500,000,000` → 解释为 Unix 时间戳
+- `nSequence == 0xFFFFFFFF` 的输入忽略 nLockTime
+
+---
+
+## SDK UTXO 管理模式
+
+### UTXO 选择策略（SDK 源码验证）
+
+| 方法 | 算法 | 最大数量 | 自动合并 |
+|------|------|---------|---------|
+| `API.fetchUTXO()` | **首次适配** (first-fit: 第一个 > amount) | 1 | 是（递归合并+3s等待） |
+| `API.getUTXOs()` | 返回全部 UTXO | 全部 | 否 |
+| `API.fetchFtUTXO()` | 首次适配 (ftBalance >= amount) | 1 | 否（需手动 mergeFT） |
+| `API.fetchFtUTXOs()` | **降序排序** + 贪心累加 | 5 | 否 |
+| `API.fetchUMTXO()` | 首次适配 + 上限 3200 TBC | 1 | 否 |
+| `findMinFiveSum()` | **最优 5-sum** (双指针) | 5 | 否 |
+
+**FT 5 个输入限制**: FT 合约脚本限制每笔交易最多 5 个 FT 输入（tape 有 6 个 uint64LE 槽位），因此 SDK 所有 FT 选择方法都限制最多 5 个。
+
+### 链式交易构建（关键模式）
+
+SDK 大量使用 `addInputFromPrevTx()` + `buildUTXO()` 模式构建未确认交易链：
+
+```typescript
+// 模式: 交易 B 花费交易 A 的输出（A 尚未广播）
+const txA = new tbc.Transaction().from(utxo).addOutput(...).sign(key);
+const txB = new tbc.Transaction()
+  .addInputFromPrevTx(txA, 0)  // 花费 txA 的 output[0]
+  .addOutput(...)
+  .sign(key);
+
+// 必须按顺序广播
+await broadcastTXsraw([{ txraw: txA.serialize() }, { txraw: txB.serialize() }]);
+```
+
+**使用此模式的合约操作**:
+
+| 操作 | 链结构 | 说明 |
+|------|--------|------|
+| `FT.MintFT()` | 2 笔: source → mint | mint 花费 source 的 output[0] |
+| `stableCoin.createCoin()` | 2 笔: NFT创建 → FT铸造 | 第二笔花费第一笔的 3 个输出 |
+| `poolNFT.createPoolNFT()` | 2 笔: source → pool | pool 花费 source 的 output[0] |
+| `FT.batchTransfer()` | N 笔链 | 每笔花费上一笔的找零（output[2]=FT, output[4]=TBC） |
+| `FT.mergeFT()` | 树状归并 | 5 个一组合并 → 递归合并结果 |
+
+### FT 祖先验证（preTX / prepreTxData）
+
+FT 合约的链上脚本执行**两级祖先验证**：
+1. **preTX** (父交易): 创建当前 FT UTXO 的交易，验证其输出结构合法
+2. **prepreTxData** (祖父交易数据): 创建父交易输入的交易数据，验证 FT 余额链的完整性
+
+这意味着每笔 FT 交易都携带了可追溯到铸造的**监管链证明**。
+
+**本地构建 vs 网络获取**:
+- 已确认的 preTX: 通过 `API.fetchFtPrePreTxData()` 从网络获取
+- 未确认链中的 preTX: 通过 `buildFtPrePreTxData()` 从本地交易数组构建（`selectTXfromLocal()`）
+
+### 并发问题与解决方案
+
+**SDK 没有内置并发控制**（无锁、无 UTXO 预留、无冲突检测）。两个进程同时调用 `fetchUTXO()` 可能获取同一个 UTXO，导致第二笔广播失败。
+
+**Pool 合约瓶颈**: Pool NFT 是单 UTXO 状态机，同一时刻只能处理一笔操作。
+
+**应用层解决方案**:
+
+| 模式 | 说明 | 适用场景 |
+|------|------|---------|
+| **UTXO 预留锁** | 数据库 `SELECT FOR UPDATE` 或 Redis 分布式锁，TTL 过期释放 | 多进程共享钱包 |
+| **UTXO 分片** | 不同进程分配不同 UTXO 池，无需协调 | 高并发支付 |
+| **单写入者队列** | 每个合约实例一个 FIFO 队列 | Pool/OrderBook 操作 |
+| **预分裂** | 提前将一个大 UTXO 拆成 N 个，每个独立可用 | 并行支付 |
+| **乐观重试** | 失败后重新获取 UTXO 重建交易 | 低并发场景 |
+
+### UTXO 碎片化管理
+
+**问题**: 每次转账产生找零，逐渐积累大量小 UTXO。当需要大额操作时，没有单个 UTXO 足够大。
+
+**SDK 的合并策略**:
+- **TBC UTXO**: `API.mergeUTXO()` — 将所有 UTXO 合并为一个，递归执行直到只剩 1 个
+- **FT UTXO**: `FT.mergeFT()` — 每轮合并 5 个，树状递归
+- **自动触发**: `fetchUTXO()` 在找不到足够大的 UTXO 时自动调用 `mergeUTXO()`
+
+**最佳实践**:
+1. **低频合并**: 在低负载时段定期合并（TBC 费率极低，合并成本可忽略）
+2. **维持 UTXO 池深度**: 保持 10-50 个 UTXO 用于并行操作
+3. **预分裂**: 大额收款后立即分裂成多个适中的 UTXO
+4. **避免灰尘**: 不要创建 < 10 satoshi 的输出（共识级 dust 阈值）
+
+### UTXO 状态机模式
+
+TBC 合约使用"状态携带 UTXO"模式：
+- **不可变代码** + **可变状态** 编码在 UTXO 的锁定脚本中
+- 状态转换 = 花费旧 UTXO + 创建含新状态的 UTXO
+
+```
+Pool NFT: [state: reserves, LP] → swap → [state: updated reserves, LP]
+OrderBook: [state: order data] → match → [state: fulfilled/partial]
+FT: [state: balance] → transfer → [state: new balances]
+```
+
+**优势**: 状态转换的原子性由 UTXO 模型天然保证
+**限制**: 单 UTXO = 单线程状态机，高频合约需要分片设计
+
+### 并行处理模式（UTXO 独有优势）
+
+UTXO 天然支持并行：不同 UTXO 之间零依赖。
+
+```
+Fan-out: 1 个 UTXO → N 个输出 → N 个独立交易可并行执行
+Fan-in:  N 个 UTXO → 1 笔交易合并（需要所有 UTXO 都可用）
+```
+
+**实际应用**:
+- 批量支付: 一笔交易多个输出（`batchTransfer`）比 N 笔单独交易高效
+- 并行 swap: 预分裂 TBC 到 N 个 UTXO，同时发起 N 笔不同 Pool 的 swap
+- 并行收款: 每个客户付到不同地址，收款后可并行处理
+
+**反模式**: 所有操作串联在一个 UTXO 上（像账户模型一样用单地址收发），完全丧失并行优势。
+
 ## 深入学习资源
 
 需要更底层的合约实现细节时，去 GitHub 看源码：
