@@ -434,11 +434,28 @@ isLock(length) → 0|1                                   // 判断是否有锁
 fetchTBCLockTime(utxo) → number                        // 获取 UTXO 锁定时间
 ```
 
-## Node Deployment (Quick)
+## Node Deployment & Operations
 
 Build: `git clone https://github.com/turingbitchain/TBCNODE.git && cd TBCNODE && mkdir build && cd build && cmake .. && make -j$(nproc)`
 RPC: `tbc-cli getinfo | getblockcount | getblockhash <h> | getrawtransaction <txid> | sendrawtransaction <hex>`
 Key config: `excessiveblocksize=10000000000`, `txindex=1`, `rpcport=8332`
+
+**存储引擎** (LevelDB):
+- DB cache 默认 450MB, batch 大小 16MB
+- Key 前缀: `C`=UTXO, `c`=legacy UTXO, `f`=block file info, `t`=tx index, `b`=block index, `B`=best block, `H`=head blocks, `F`=flags, `R`=reindex, `l`=last block file
+- Block 文件格式: `[4B magic][4B size][block]`，超大区块(>=4GB): `[4B magic][0xFFFFFFFF][8B size][block]`
+- CDiskTxPos 支持 64 位偏移（`uint64_t nTxOffset`），兼容超大区块
+- UTXO Coin 压缩: `VARINT((height << 1) | isCoinBase)` + `CTxOutCompressor`
+- Undo 数据: `VARINT(height * 2 + isCoinbase)` + 被消费的 TxOut
+- UTXO hash 使用 SipHash-2-4; 签名/脚本缓存使用 CuckooCache
+
+**链工作量**: `work = 2^256 / (target + 1)` (chain.cpp:135)
+
+**区块组装**:
+- Legacy assembler 按祖先费率排序, 5% 空间保留给高优先级交易
+- 注意: 默认已切换为 JournalingBlockAssembler
+
+**费率估算**: 仅有简单的 `CTxMemPool::estimateFee()` 方法，**无** `estimateSmartFee` RPC（已从 Bitcoin Core 中移除）
 
 ---
 
@@ -480,18 +497,64 @@ Key config: `excessiveblocksize=10000000000`, `txindex=1`, `rpcport=8332`
 | `code-reference.md` | 16 种交易类型完整 TypeScript 代码 |
 | `api-reference.md` | API 全量文档（端点、参数、返回格式） |
 
-## TBC 链特有常量
+## TBC 链特有常量（源码验证）
 
-| 常量 | 值 | 说明 |
+| 常量 | 值 | 源码位置 | 说明 |
+|------|-----|----------|------|
+| COINBASE_MATURITY | 1 | consensus/consensus.h | 矿工奖励 1 个确认后即可花费（Bitcoin = 100） |
+| TX nVersion | 10 (0x0a) | validation.cpp:3474 | 所有交易必须 nVersion==10（区块 824190 后强制） |
+| Genesis Height | 620538 | chainparams.cpp:21 | Genesis 协议升级激活高度 |
+| TBC First Block Height | 824190 | validation.cpp:79 | TBC 链硬分叉高度 |
+| TBC First Block Hash | `0000000058968601...` | chainparams.cpp:108 | 824190 区块 hash |
+| KYC V1 Height | 824189 | validation.cpp:970 | Coinbase 矿工身份验证 V1 激活 |
+| KYC V2 Height | 927000 | validation.cpp:971 | FilledMinerBillV2 验证激活 |
+| OP_PUSH_META | 0xba | script/opcodes.h:144 | TBC 特有操作码，访问交易元数据 |
+| OP_PARTIAL_HASH | 0xbb | script/opcodes.h:145 | TBC 特有操作码，部分 SHA256 哈希 |
+| OP_CHECKDATASIG | 0xbc | script/opcodes.h:146 | 数据签名验证（TBC 4 参数版本） |
+| SIGHASH_FORKID | 0x40 | script/sighashtype.h:18 | 签名强制包含 FORKID |
+| LOCKTIME_THRESHOLD | 500000000 | script/script.h:33 | < 此值 = 区块高度, >= 此值 = Unix 时间戳 |
+| SEQUENCE_LOCKTIME_GRANULARITY | 9 | primitives/transaction.h | BIP68 时间锁粒度 = 2^9 = 512 秒 |
+| Net Magic (mainnet) | `e3e1f3e8` | chainparams.cpp:151 | P2P 网络 magic bytes |
+| Disk Magic | `f9beb4d9` | chainparams.cpp:147 | 磁盘存储 magic bytes |
+
+### OP_PUSH_META 元数据映射（interpreter.cpp:786-882）
+
+取栈顶 1 字节，有效值 1-7:
+
+| 值 | 返回数据 | 大小 | 说明 |
+|-----|----------|------|------|
+| 1 | `tx.nVersion` | 4B | 交易版本号 |
+| 2 | `tx.nLockTime` | 4B | 交易时间锁 |
+| 3 | `tx.vin.size()` | 4B | 输入数量 |
+| 4 | `tx.vout.size()` | 4B | 输出数量 |
+| 5 | `SHA256(all inputs)` | 32B | 所有输入的 SHA256 摘要 |
+| 6 | `prevout.txid + prevout.n + nSequence` | 40B | 当前输入的 outpoint + 序列号 |
+| 7 | `SHA256(all outputs)` | 32B | 所有输出的 SHA256 摘要 |
+
+合约用法：值 2 用于 PiggyBank 时间锁验证；值 5/7 用于 FT/Pool 合约的 partial hash 验证。
+
+### Post-Genesis 脚本规则（区块 >= 620538）
+
+| 规则 | Before Genesis | After Genesis |
+|------|---------------|--------------|
+| 脚本最大大小 | 10,000 字节 | UINT32_MAX (~4GB) |
+| 操作码数量限制 | 500 | UINT32_MAX (无限制) |
+| 栈元素大小 | 520 字节 | 无限制（受内存限制: 100MB policy, INT64_MAX consensus） |
+| P2SH 输出 | 允许 | **禁止** (拒绝码: `bad-txns-vout-p2sh`) |
+| OP_RETURN 格式 | `OP_RETURN <data>` | `OP_FALSE OP_RETURN <data>` |
+
+Post-Genesis 启用的操作码: `OP_MUL(0x95)`, `OP_DIV(0x96)`, `OP_MOD(0x97)`, `OP_CAT(0x7e)`, `OP_SPLIT(0x7f)`, `OP_NUM2BIN`, `OP_BIN2NUM`, `OP_AND`, `OP_OR`, `OP_XOR`. 仅禁用: `OP_2MUL`, `OP_2DIV`.
+
+签名方案: ECDSA (变长) + Schnorr (固定 64 字节)。Schnorr 多签由 `SCRIPT_ENABLE_SCHNORR_MULTISIG (1<<20)` 控制。
+
+### 脚本验证标志位（script_flags.h）
+
+| 标志 | 值 | 说明 |
 |------|-----|------|
-| COINBASE_MATURITY | 1 | 矿工奖励 1 个确认后即可花费（Bitcoin = 100） |
-| TX Version | 10 (0x0a) | TBC 交易版本号 |
-| Genesis Height (mainnet) | 620538 | Genesis 升级激活高度 |
-| TBC First Block Height | 824190 | TBC 链第一个区块 |
-| OP_PUSH_META | 0xba | TBC 特有操作码，用于访问交易元数据（HTLC 时间验证、NFT Code 脚本） |
-| OP_PARTIAL_HASH | 0xbb | TBC 特有操作码，部分 SHA256 哈希（Pool 合约脚本优化） |
-
-Post-Genesis: P2SH 输出被禁止；OP_RETURN 格式从 `OP_RETURN <data>` 变为 `OP_FALSE OP_RETURN <data>`；脚本大小和操作码数量限制移除（最大 4GB）；启用 OP_MUL, OP_DIV, OP_MOD, OP_CAT, OP_SPLIT 等操作码.
+| SCRIPT_ENABLE_SIGHASH_FORKID | 1<<16 | 强制签名含 FORKID |
+| SCRIPT_GENESIS | 1<<18 | Genesis 规则激活 |
+| SCRIPT_UTXO_AFTER_GENESIS | 1<<19 | UTXO 在 Genesis 后创建 |
+| SCRIPT_ENABLE_SCHNORR_MULTISIG | 1<<20 | 启用 Schnorr 多签 |
 
 ## HTLC 脚本细节
 
@@ -510,9 +573,17 @@ Pool 合约有频率限制，因此存在中心化 Swap 服务模式：
 **识别特征**：长转移链（>100 层）、同一地址反复出现、无 `bison` Pool 标记、连续 FT_Transfer。
 **溯源策略**：快速跳过服务转移链，关注 Pool_Swap 边界作为关键节点。
 
-## 交易广播可靠性（重要）
+## 交易广播与内存池（源码验证）
 
-TBC 节点的 `CTxnPropagator` 每 250ms 批量处理新交易，存在以下已知问题：
+**内存池参数**:
+| 参数 | 值 | 源码 |
+|------|-----|------|
+| 默认大小 | **1000 MB (1GB)** | policy/policy.h:91 |
+| 过期时间 | 336 小时 (14 天) | validation.h:103 |
+| mapRelay 过期 | 15 分钟 | net_processing.cpp:4057 |
+| P2P 消息头 | 24 字节 (4 magic + 12 cmd + 4 len + 4 checksum) | protocol.h:53-62 |
+
+**CTxnPropagator**: 每 250ms 批量处理新交易（txn_propagator.h:70），存在已知问题：
 - **250ms 窗口丢失**：节点断连期间的交易不会重试
 - **filterInventoryKnown 污染**：节点收到 INV 但断连后，重连时认为已知该 tx，永远不再请求
 
@@ -521,6 +592,11 @@ TBC 节点的 `CTxnPropagator` 每 250ms 批量处理新交易，存在以下已
 2. 缺失则用 `/broadcasttx` 重新广播
 3. 关键交易实现重试循环：broadcast → wait 2s → check mempool → rebroadcast if missing
 4. 用 `/broadcasttxs` 批量发送到多个 API 端点
+
+**P2P 网络**:
+- 最大出站连接: 8, 最大总连接: 125
+- 地址管理器: 256 tried buckets + 1024 new buckets, 每桶 64 条目
+- PROTOCONF 消息: 握手完成后（VERACK 之后）交换协议配置
 
 ## SDK Key Types / Interfaces
 
