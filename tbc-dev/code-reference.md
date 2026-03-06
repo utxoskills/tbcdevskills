@@ -10,8 +10,11 @@ Complete runnable code examples for every TBC transaction type.
 import * as tbc from "tbc-lib-js";
 import {
   API, FT, NFT, poolNFT, poolNFT2, orderBook, MultiSig,
+  HTLC, stableCoin, piggyBank,
   buildUTXO, buildFtPrePreTxData, fetchInBatches, parseDecimalToBigInt,
 } from "tbc-contract";
+const { deployHTLC, withdraw, refund, fillSigDepoly, fillSigWithdraw, fillSigRefund,
+        deployHTLCWithSign, withdrawWithSign, refundWithSign } = HTLC;
 
 const network = "testnet";  // or "mainnet"
 const privateKeyA = tbc.PrivateKey.fromString("YOUR_PRIVATE_KEY");
@@ -576,6 +579,167 @@ const tx2 = new tbc.Transaction()
     .setLockTime(900000)  // block height or Unix timestamp
     .sign(privateKeyA);
 await API.broadcastTXraw(tx2.uncheckedSerialize(), network);
+```
+
+---
+
+## 17. HTLC (Hash Time-Lock Contract)
+
+```typescript
+const secret = "my_secret_preimage";
+const hashlock = tbc.crypto.Hash.sha256(Buffer.from(secret)).toString("hex");
+const timelock = 950000; // block height
+
+// -- Method A: Two-phase (build raw + fill signature separately) --
+// 1. Deploy HTLC
+const deployRaw = deployHTLC(addressA, addressB, hashlock, timelock, 1.0, utxo);
+const deployTx = fillSigDepoly(deployRaw, sig, publicKeyA);  // note: SDK typo "Depoly"
+const deployTxid = await API.broadcastTXraw(deployTx, network);
+
+// 2. Withdraw (receiver provides preimage)
+const htlcUtxo = buildUTXO(new tbc.Transaction(deployTx), 0);
+const withdrawRaw = withdraw(addressB, htlcUtxo);
+const withdrawTx = fillSigWithdraw(withdrawRaw, secret, sigB, publicKeyB);
+await API.broadcastTXraw(withdrawTx, network);
+
+// 3. Refund (sender, after timelock expires)
+const refundRaw = refund(addressA, htlcUtxo, timelock);
+const refundTx = fillSigRefund(refundRaw, sigA, publicKeyA);
+await API.broadcastTXraw(refundTx, network);
+
+// -- Method B: Direct signing with private key --
+const deployTx2 = deployHTLCWithSign(addressA, addressB, hashlock, timelock, 1.0, utxo, privateKeyA.toString());
+await API.broadcastTXraw(deployTx2, network);
+
+const withdrawTx2 = withdrawWithSign(privateKeyB.toString(), addressB, htlcUtxo, secret);
+await API.broadcastTXraw(withdrawTx2, network);
+
+const refundTx2 = refundWithSign(addressA, htlcUtxo, privateKeyA.toString(), timelock);
+await API.broadcastTXraw(refundTx2, network);
+```
+
+---
+
+## 18. StableCoin
+
+```typescript
+// -- Create StableCoin (admin creates coin + NFT certificate) --
+const coin = new stableCoin({ name: "USDT-TBC", symbol: "USDT", amount: 1000000, decimal: 6 });
+const utxo = await API.fetchUTXO(privateKeyAdmin, 0.1, network);
+const utxoTX = await API.fetchTXraw(utxo.txId, network);
+const [coinNftTXRaw, coinMintRaw] = coin.createCoin(privateKeyAdmin, addressAdmin, utxo, utxoTX, "Initial mint");
+await API.broadcastTXsraw([{ txraw: coinNftTXRaw }, { txraw: coinMintRaw }], network);
+
+// -- Mint more (increase supply) --
+const nftPreTX = await API.fetchTXraw(nftUtxo.txId, network);
+const nftPrePreTX = await API.fetchTXraw(/* previous nft tx */, network);
+const mintRaw = coin.mintCoin(privateKeyAdmin, addressTo, 500000, utxo, nftPreTX, nftPrePreTX, "Minting 500k");
+await API.broadcastTXraw(mintRaw, network);
+
+// -- Transfer (inherited from FT, same as FT.transfer) --
+const coinInfo = await API.fetchFtInfo(coin.contractTxid, network);
+coin.initialize(coinInfo);
+const ftutxo_codeScript = FT.buildFTtransferCode(coin.codeScript, addressA).toBuffer().toString("hex");
+const ftutxos = await API.fetchFtUTXOs(coin.contractTxid, addressA, ftutxo_codeScript, network);
+let preTXs: tbc.Transaction[] = [];
+let prepreTxData: string[] = [];
+for (let i = 0; i < ftutxos.length; i++) {
+    preTXs.push(await API.fetchTXraw(ftutxos[i].txId, network));
+    prepreTxData.push(await API.fetchFtPrePreTxData(preTXs[i], ftutxos[i].outputIndex, network));
+}
+const transferRaw = coin.transfer(privateKeyA, addressB, 1000, ftutxos, utxo, preTXs, prepreTxData);
+await API.broadcastTXraw(transferRaw, network);
+
+// -- Merge coin UTXOs --
+const mergeRaws = coin.mergeCoin(privateKeyA, utxo, ftutxos, preTXs, prepreTxData);
+await API.broadcastTXsraw(mergeRaws, network);
+
+// -- Freeze coin UTXO with locktime --
+const frozenRaw = coin.frozenCoinUTXO(privateKeyAdmin, ftutxos[0], utxo, preTXs[0], prepreTxData[0], 1000000);
+await API.broadcastTXraw(frozenRaw, network);
+```
+
+---
+
+## 19. PiggyBank (TBC Time-Lock Freeze)
+
+```typescript
+const lockTime = 1000000; // block height when funds unlock
+
+// -- Freeze TBC (two-phase: build raw, sign externally) --
+const freezeRaw = piggyBank.freezeTBC(addressA, 10, lockTime, utxos);
+// ... sign externally and broadcast
+
+// -- Freeze TBC (direct with private key) --
+const freezeTx = piggyBank._freezeTBC(privateKeyA, 10, lockTime, utxos);
+await API.broadcastTXraw(freezeTx, network);
+
+// -- Check lock time of frozen UTXO --
+const frozenUtxos = await API.fetchFrozenUTXOList(addressA, network);
+for (const utxo of frozenUtxos) {
+    const lt = piggyBank.fetchTBCLockTime(utxo);
+    console.log(`UTXO ${utxo.txId}:${utxo.outputIndex} locked until block ${lt}`);
+}
+
+// -- Unfreeze TBC (after lockTime block height reached) --
+const unfreezeTx = await piggyBank._unfreezeTBC(privateKeyA, frozenUtxos, network);
+await API.broadcastTXraw(unfreezeTx, network);
+
+// -- Check frozen balance --
+const frozenBalance = await API.fetchFrozenTBCBalance(addressA, network);
+console.log(`Frozen: ${frozenBalance} TBC`);
+```
+
+---
+
+## 20. NFT Transfer with TBC Payment
+
+```typescript
+const nft = new NFT(nftContractId);
+const nftInfo = await API.fetchNFTInfo(nft.contract_id, network);
+nft.initialize(nftInfo);
+
+const pre_tx = await API.fetchTXraw(nftUtxo.txId, network);
+const pre_pre_tx = await API.fetchTXraw(/* previous tx */, network);
+
+// Transfer NFT to addressB AND send 5 TBC to addressC in one transaction
+const transferRaw = nft.transferNFTWithTBC(
+    addressA,        // from
+    addressB,        // NFT recipient
+    addressC,        // TBC recipient (can be same or different)
+    privateKeyA,
+    utxos,
+    pre_tx,
+    pre_pre_tx,
+    5                // TBC amount
+);
+await API.broadcastTXraw(transferRaw, network);
+```
+
+---
+
+## 21. FT Transfer with Additional Info
+
+```typescript
+const ft = new FT(ftContractTxid);
+const ftInfo = await API.fetchFtInfo(ft.contractTxid, network);
+ft.initialize(ftInfo);
+
+const ftutxo_codeScript = FT.buildFTtransferCode(ft.codeScript, addressA).toBuffer().toString("hex");
+const ftutxos = await API.fetchFtUTXOs(ft.contractTxid, addressA, ftutxo_codeScript, network);
+let preTXs: tbc.Transaction[] = [];
+let prepreTxData: string[] = [];
+for (let i = 0; i < ftutxos.length; i++) {
+    preTXs.push(await API.fetchTXraw(ftutxos[i].txId, network));
+    prepreTxData.push(await API.fetchFtPrePreTxData(preTXs[i], ftutxos[i].outputIndex, network));
+}
+
+// Transfer FT with extra OP_RETURN data (e.g. invoice ID, memo)
+const additionalInfo = Buffer.from(JSON.stringify({ invoiceId: "INV-2026-001", note: "Payment" }));
+const txraw = ft.transferWithAdditionalInfo(
+    privateKeyA, addressB, 100, ftutxos, utxo, preTXs, prepreTxData, additionalInfo
+);
+await API.broadcastTXraw(txraw, network);
 ```
 
 ---

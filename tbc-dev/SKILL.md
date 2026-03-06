@@ -464,10 +464,13 @@ Key config: `excessiveblocksize=10000000000`, `txindex=1`, `rpcport=8332`
 | 14 | MultiSig 多签 | TBC 转账 + FT 转账（M-of-N） |
 | 15 | Memo / TimeLock | 备注转账 + 时间锁转账 |
 | 16 | buildUTXO 工具 | 从 TX 构造 UTXO 对象 |
+| 17 | HTLC 哈希时间锁 | `deployHTLC` / `withdraw` / `refund`（两阶段 + 直接签名两种模式） |
+| 18 | StableCoin 稳定币 | `createCoin` / `mintCoin` / `transfer` / `mergeCoin` / `frozenCoinUTXO` |
+| 19 | PiggyBank 时间锁冻结 | `freezeTBC` / `unfreezeTBC` / `fetchTBCLockTime` / `fetchFrozenTBCBalance` |
+| 20 | NFT 转账 + TBC 支付 | `NFT.transferNFTWithTBC`（一笔 tx 同时转 NFT + 发 TBC） |
+| 21 | FT 转账 + 附加信息 | `FT.transferWithAdditionalInfo`（附加 OP_RETURN 数据） |
 
-> **`code-reference.md` 里没有覆盖的情况**（如 HTLC、StableCoin、复杂组合交易）：
-> 去 GitHub 源码看具体实现 → https://github.com/TuringBitChain/tbc-contract/tree/main/lib/contract
-> 每个合约类型一个文件（`ft.ts`, `poolNFT.ts`, `orderBook.ts`, `multiSig.ts`, `htlc.ts`, `stableCoin.ts` 等）。
+所有合约类型都有完整代码示例，覆盖所有 9 种合约。
 
 ## Skill 文件结构（发给别人时全部包含）
 
