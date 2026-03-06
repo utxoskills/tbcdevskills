@@ -77,7 +77,7 @@ TBC 合约脚本通过末尾标记区分身份。一个输出的 scriptPubKey he
 | **"2Code"** | `32436f6465` | Pool NFT v2 **或** FT Code 脚本 | Pool NFT 的 vout[0]；普通 FT Code 的 vout[0] |
 | **"1Code"** | `31436f6465` | Pool NFT v1 Code 脚本 | Pool v1 的 vout[0] |
 | **"\x02Code"** | `02436f6465` | FTLP Code 脚本（LP Token） | FTLP 的 vout[0]（Pool 流动性操作、独立 LP 操作） |
-| **"3Code"** | `33436f6465` | NFT Code 脚本 | NFT 的 vout[0] |
+| **"3Code"** | `33436f6465` | NFT Code 脚本（仅旧版 v0） | 旧版 NFT vout[0]。**新版 NFT Code 末尾是 `ac6a` 无此标记，识别 NFT 应看 NHold/NTape** |
 | **"FTape"** | `4654617065` | FT/FTLP Tape（代币数据） | FT Tape(0sat)、FTLP Tape(0sat) |
 | **"NTape"** | `4e54617065` | NFT Tape（元数据） | NFT Tape(0sat)、Pool NFT Tape(NTape 含池子状态) |
 | **"NHold"** | `4e486f6c64` | NFT Hold（持有权） | NFT Hold(100sat)，含 "V0 Curr NHold" 或 "V0 Mint NHold" |
@@ -175,7 +175,7 @@ amountData = 3 × uint64LE: [ft_lp_amount, ft_a_amount, tbc_amount(satoshis)]
 
 #### NFT（非同质化代币）
 
-**核心理解**：NFT Code 末尾 `33436f6465`（"3Code"），Hold 含 `NHold`，Tape 含 `NTape`。每个 NFT = Code(200sat) + Hold(100sat) + Tape(0sat) 三件套。
+**核心理解**：NFT 通过 **Hold(`NHold`)** 和 **Tape(`NTape`)** 识别，不要依赖 Code 末尾标记（新版 Code 末尾是 `ac6a` 即 `OP_CHECKSIG OP_RETURN`，旧版 v0 才有 `33436f6465`"3Code"）。每个 NFT = Code(200sat) + Hold(100sat) + Tape(0sat) 三件套。
 
 **子类型本质**：
 - **Collection Create**：Tape(0sat) + N 个 Mint 槽位(100sat each，含 "V0 Mint NHold")。
@@ -207,7 +207,7 @@ amountData = 3 × uint64LE: [ft_lp_amount, ft_a_amount, tbc_amount(satoshis)]
    - 有 `2Code`/`1Code` + 紧邻的 `NTape` → Pool NFT 参与
    - 有 `02436f6465` → FTLP 参与
    - 有 `2Code` + 紧邻的 `FTape` → 普通 FT（非 Pool）
-   - 有 `33436f6465` / `NHold` / `NTape`（无 Pool NFT 上下文） → NFT
+   - 有 `NHold`(`4e486f6c64`) / `NTape`(`4e54617065`)（无 Pool NFT 上下文） → NFT
    - 固定长度非标准脚本（946B/1010B） → OrderBook
    - 全 P2PKH → 纯 TBC 转账
 
@@ -252,7 +252,7 @@ amountData = 3 × uint64LE: [ft_lp_amount, ft_a_amount, tbc_amount(satoshis)]
 **示例**（NFT 原子买卖 — 聚合地址模式）:
 ```
 交易 f79e71a5...:
-  vout[0]: NFT Code (200sat)    → nonstandard（33436f6465 结尾）
+  vout[0]: NFT Code (200sat)    → nonstandard
   vout[1]: NFT Hold (100sat)    → 1KxWjKn2...  ← NFT 接收方
   vout[2]: NTape (0sat)         → OP_RETURN
   vout[3]: TBC (2.88535)        → 1C1YhZB5...  ← 大额 TBC，地址≠NFT 接收方 → 卖家收款
@@ -277,7 +277,7 @@ amountData = 3 × uint64LE: [ft_lp_amount, ft_a_amount, tbc_amount(satoshis)]
 | **2Code** | `32436f6465` | Code 脚本末尾 | Pool NFT v2, **普通 FT Code** |
 | **1Code** | `31436f6465` | Code 脚本末尾 | Pool NFT v1 |
 | **\x02Code** | `02436f6465` | Code 脚本末尾 | **FTLP (LP Token)** |
-| **3Code** | `33436f6465` | Code 脚本末尾 | **NFT Code** |
+| **3Code** | `33436f6465` | Code 脚本末尾（旧版 v0） | NFT Code（旧版），新版无此标记 |
 | **FTape** | `4654617065` | Tape 数据标识 | FT Tape, FTLP Tape, StableCoin Tape |
 | **NTape** | `4e54617065` | Tape 数据标识 | NFT Tape, **Pool NFT Tape (含池状态)** |
 | **NHold** | `4e486f6c64` | Hold 权益标识 | NFT Hold |
@@ -306,7 +306,7 @@ nVersion (int32 LE) → vin (CompactSize + vector) → vout (CompactSize + vecto
 
 **FT Code**: 复杂合约脚本（含 OP_PARTIAL_HASH, OP_PUSH_META），末尾 `OP_RETURN 0x15 <hash160+00:21B> 0x05 0x32436f6465`("2Code")。v1=1564B，v2=1884B。
 **FTLP Code**: 同 FT Code 结构，但末尾 `OP_RETURN 0x15 <hash160+00:21B> 0x05 0x02436f6465`("\x02Code")。
-**NFT Code**: 末尾 `0x05 0x33436f6465`("3Code")。Code=200sat。
+**NFT Code**: 新版末尾 `OP_CHECKSIG OP_RETURN`(`ac6a`)；旧版 v0 末尾 `0x05 0x33436f6465`("3Code")。Code=200sat。**识别 NFT 靠 NHold/NTape，不靠 Code 标记。**
 **FT Tape**: `OP_FALSE OP_RETURN <amount:48B = 6×uint64LE> <decimal:1B> <name> <symbol> "FTape"`
 **NFT Hold**: `... OP_RETURN "V0 Curr NHold"` (100sat) 或 `"V0 Mint NHold"` (Collection slot, 100sat)
 **NFT Tape**: `OP_FALSE OP_RETURN <JSON hex> "NTape"` (0sat)
