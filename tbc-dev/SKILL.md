@@ -50,279 +50,243 @@ NFT (基础非同质化代币)
 MultiSig, HTLC, OrderBook, PiggyBank (standalone)
 ```
 
-## 交易分析流程（核心能力）
+## 理解 TBC 交易（核心能力）
 
-当用户给你一个 txid 要求分析时，按以下步骤执行：
+> **⚠️ 禁止用 browser 打开区块浏览器来"看一眼"。** 必须用 API 拿原始交易数据自己分析。
+> **⚠️ 分析交易时一次性完成给出最终结论，不要中途停下来问"要不要继续"。**
 
-> **⚠️ 禁止用 browser 打开区块浏览器（如 tbcscan.xyz）来"看一眼"就结束。** 区块浏览器只显示表面信息，无法判断合约类型和事件。必须用 API 拿原始交易数据，然后结合合约结构自己分析判断。这才是你作为 TBC 开发助手的核心能力。
->
-> **⚠️ 分析交易时必须一次性完成全部步骤给出最终结论，不要中途停下来问用户"要不要继续分析"。** 用户让你分析交易就是要完整结果：交易类型 + 具体事件 + 涉及地址 + 金额 + 代币信息，全部查完一起说。
+### 获取数据
 
-### Step 1: 获取交易数据
-
-调用 API 获取交易详情：
 ```
 curl -s https://api.turingbitchain.io/api/tbc/decode/txid/{txid}
 ```
-返回包含完整的 vin/vout/scriptPubKey 信息。如需原始 hex 可用 `/txraw/txid/{txid}`。
+FT 交易追加 `/ft/decode/txid/{txid}` 获取 contract_id、地址、金额。原始 hex: `/txraw/txid/{txid}`。
 
-如果是 FT 相关交易，追加调用 `/ft/decode/txid/{txid}` 获取可读的 contract_id、地址、金额。
+### 交易本质：每种合约的"DNA"
 
-### Step 2: 判断交易类型
+**不要死记步骤。理解每种合约输出的本质特征，你就能识别任何交易，包括从未见过的变体。**
 
-检查 vout 的 scriptPubKey，按以下**严格优先级**匹配（顺序很重要！合约特有标记优先于通用标记）：
+TBC 的所有合约都遵循同一模式：**每个输出的脚本末尾有身份标记，就像文件扩展名**。读懂这些标记就能判断交易类型。
 
-> **⚠️ 优先级原因**：Pool 交易的 FTAbyC 输出也含 `4654617065`（FTape），Pool 的 NTape 也含 `4e54617065`（NTape）。如果先查 FTape/NTape 会把 Pool 错误识别为 FT/NFT。必须先排除 Pool 和 OrderBook。
+#### 脚本末尾标记体系（所有合约的"指纹"）
 
-**1) Pool 交易（最先检查！）** — vout[0] 的脚本末尾含 `32436f6465`（"2Code"，Pool v2）或 `31436f6465`（"1Code"，Pool v1），且 vout[0] satoshis >= 1000。vout[1] 是 NTape（末尾 `4e54617065`）。
+TBC 合约脚本通过末尾标记区分身份。一个输出的 scriptPubKey hex 末尾几个字节就是它的"姓"：
 
-> **⚠️ 重要纠正**：Pool 脚本中**没有** "bison"（6269736f6e）标记！这是一个常见误解。"bison" 可能出现在 `serverProvider_tag` 参数中但**不在脚本里**。正确的识别标记是 `32436f6465`（"2Code"）或 `31436f6465`（"1Code"）。
+| 末尾标记 | Hex | 含义 | 出现在哪 |
+|---------|-----|------|---------|
+| **"2Code"** | `32436f6465` | Pool NFT v2 **或** FT Code 脚本 | Pool NFT 的 vout[0]；普通 FT Code 的 vout[0] |
+| **"1Code"** | `31436f6465` | Pool NFT v1 Code 脚本 | Pool v1 的 vout[0] |
+| **"\x02Code"** | `02436f6465` | FTLP Code 脚本（LP Token） | FTLP 的 vout[0]（Pool 流动性操作、独立 LP 操作） |
+| **"3Code"** | `33436f6465` | NFT Code 脚本 | NFT 的 vout[0] |
+| **"FTape"** | `4654617065` | FT/FTLP Tape（代币数据） | FT Tape(0sat)、FTLP Tape(0sat) |
+| **"NTape"** | `4e54617065` | NFT Tape（元数据） | NFT Tape(0sat)、Pool NFT Tape(NTape 含池子状态) |
+| **"NHold"** | `4e486f6c64` | NFT Hold（持有权） | NFT Hold(100sat)，含 "V0 Curr NHold" 或 "V0 Mint NHold" |
+| **"MTape"** | `4d54617065` | MultiSig Tape（多签配置） | 多签钱包创建的 Tape 输出 |
 
-Pool 交易的**第一步识别**：vout[0] 脚本末尾是 `ac6a0532436f6465`（OP_CHECKSIG OP_RETURN 0x05 "2Code"）或 `ac6a0531436f6465`（...  "1Code"）。
+**关键洞察**：`2Code` 同时出现在 Pool NFT **和**普通 FT Code 中。区分它们不能只看末尾标记，要看**整体结构**（见下文）。
 
-Pool 子类型通过**输出结构**区分（SDK 源码验证）：
+#### 区分相似输出的本质方法
 
-| 操作 | vout 数量 | vout[0] sat | 关键特征 |
-|------|----------|-------------|---------|
-| **Pool Create** | 2+change | 1000 | NTape 的 amountData 全为 0（ft_lp=0, ft_a=0, tbc=0），**无 FTAbyC/FTLP 输出** |
-| **Pool Init** | 6-8+change | 1000+tbc_amount (v2) 或 1000 (v1) | 首次出现 FTAbyC（vout[2-3]）+ FTLP（vout[4-5]，末尾 `4654617065`），NTape amountData 从 0 变为非 0 |
-| **Add LP (increaseLP)** | 6-8+change | 增加（v2: +tbc_diff） | 与 Init 结构相同：Pool NFT + NTape + FTAbyC + FTLP，区分看 NTape 的 amountData 是否**已有非零值**（Init 是从 0 开始） |
-| **Remove LP (consumeLP)** | 7-12+change | 减少（v2: -tbc_diff） | **独有特征**: vout 含 FTLP burn 到 `1BitcoinEaterAddressDontSendf59kuE` + P2PKH TBC 退回用户 |
-| **Swap TBC→FT** | 4-6+change | 增加（v2: +amount） | **无 FTLP 输出**。vout[2-3]=FTAbyA（FT 给用户）+ vout[4-5]=FTAbyC（池子 FT 余额）。vout[0] sat > vin Pool sat |
-| **Swap FT→TBC** | 5-8+change | 减少（v2: -amount） | **无 FTLP 输出**。vout[2]=P2PKH TBC 给用户 + vout[3-4]=FTAbyC。vout[0] sat < vin Pool sat |
-| **Merge FT in Pool** | 4+change | 不变 | Pool NFT + NTape + FTAbyC 合并（amountData 不变） |
-| **Merge FTLP** | 2+change | **无 Pool NFT** | 只有 FTLP Code+Tape（末尾 `02436f6465` + `4654617065`），无 Pool NFT |
-| **Burn FTLP** (v2) | 2+change | **无 Pool NFT** | 与 Merge FTLP 结构相同，**唯一区别**：FTLP Code（vout[0]）的目标地址是 `1BitcoinEaterAddressDontSendf59kuE`（销毁地址） |
+**Pool NFT vs 普通 FT Code**（都以 `2Code` 结尾）：
+- Pool NFT：vout[0] 以 `2Code`/`1Code` 结尾，**紧接着的 vout[1] 以 `NTape` 结尾**（池子状态数据）。satoshis >= 1000。
+- 普通 FT Code：vout[0] 以 `2Code` 结尾，**紧接着的 vout[1] 以 `FTape` 结尾**（代币余额数据）。satoshis = 500。
 
-**识别流程**:
+**FTLP vs 普通 FT**（都含 `FTape`）：
+- FTLP Code：末尾是 `02436f6465`（"\x02Code"），内部也含 `FTape` 验证逻辑。satoshis = 500。
+- 普通 FT Code：末尾是 `32436f6465`（"2Code"），无 `02436f6465`。satoshis = 500。
+- **判断方法**：看 vout[0] 脚本最后 5 字节。`02436f6465` = FTLP，`32436f6465` = FT/Pool。
+
+**Pool NFT 内的 FTAbyC vs 普通 FT**：
+- FTAbyC（Pool 合约持有的 FT）本质就是一个普通 FT Code，但接收地址编码的是 Pool NFT 的 codehash，不是用户地址。出现在 Pool 交易的 vout[2] 或 vout[3] 位置。
+- 在 Pool 交易中（vout[0] 已确认是 Pool NFT），后续的 FT 输出都是池子的组成部分，不是独立的 FT 交易。
+
+### 每种合约交易的本质特征
+
+#### Pool（流动性池）
+
+**核心理解**：Pool 是一个**单 UTXO 状态机**。每次操作（swap、加减流动性）都是花费旧的 Pool NFT UTXO，创建含新状态的 Pool NFT UTXO。Pool NFT 本体 = vout[0]（Code，承载 TBC 储备金），vout[1]（NTape，记录 ft_lp/ft_a/tbc_amount 三个储备量）。
+
+**NTape amountData 结构**（vout[1]，`4e54617065` 结尾）：
 ```
-1. vout[0] 脚本末尾有 32436f6465 或 31436f6465 → Pool NFT 交易，进入子类型判断:
-   a. 有 FTLP 输出（02436f6465 标记）？
-      - 有 → Init / AddLP / RemoveLP
-        - 有 burn 到 EaterAddress？→ RemoveLP
-        - NTape amountData 从 0→非0？→ Init
-        - 否则 → AddLP
-      - 无 → Swap / Merge
-        - vout[0] satoshis 增加（vs vin Pool NFT）？→ Swap TBC→FT
-        - vout[0] satoshis 减少？→ Swap FT→TBC
-        - vout[0] satoshis 不变？→ Merge FT in Pool
-2. vout[0] 末尾无 2Code/1Code，但含 02436f6465（"\x02Code"）→ FTLP 独立操作:
-   - 检查 vout[0] 脚本倒数第二个 ASM chunk（02436f6465 前面的那个 hex 值），
-     这是目标地址的 hash160+00/01。对比 EaterAddress 的 hash160:
-     759d6677091e233b30c3f1c1057422d16f0b926c
-     - 匹配 → **Burn FTLP**
-     - 不匹配 → **Merge FTLP**
-   注意：FTLP 操作**没有** Pool NFT 输出，只有 FTLP Code(500sat)+Tape(0sat)+找零。
-   它的 vout[0] 同时含 02436f6465 和 4654617065。
-   ⚠️ 此检查必须在 FT 规则（规则3）之前，否则 FTLP 会被误识别为 FT Transfer！
-```
-
-**NTape amountData 解析**（Pool NFT Tape = vout[1]）:
-```
-OP_FALSE OP_RETURN <partialHashes:64B> <amountData:24B> <ft_a_contractTxid:32B> [v2额外: serviceFeeRate:1B lpPlan:1B withLock:1B withLockTime:1B] 4e54617065
-amountData = 3 个 uint64LE:
-  bytes [0:8]  = ft_lp_amount (LP 供应量)
-  bytes [8:16] = ft_a_amount  (池内 FT-A 数量)
-  bytes [16:24]= tbc_amount   (池内 TBC 数量, 单位 satoshis)
-```
-对比 vin 和 vout 的 amountData 可以算出 swap/LP 的具体金额变化。
-
-**v1 vs v2 区分**: v1 末尾是 `31436f6465`（"1Code"），v2 末尾是 `32436f6465`（"2Code"）。v2 的 NTape 在 `4e54617065` 前多 4 个字节（serviceFeeRate, lpPlan, withLock, withLockTime）。
-
-**2) OrderBook 交易** — vout 含非标准脚本（**不含** `32436f6465`/`31436f6465`），脚本以 `OP_1 OP_RETURN`（`516a`）+ 0xFF 填充 + OrderData 结构结尾。脚本长度固定：卖单=946B，买单=1010B。
-
-**OrderBook vs Pool 的关键区分**（SDK 源码验证）：
-
-| 特征 | Pool NFT | OrderBook |
-|------|----------|-----------|
-| 脚本结尾 | `ac6a05 32436f6465`（OP_CHECKSIG OP_RETURN "2Code"） | `516a`（OP_1 OP_RETURN）+ 0xFF padding + OrderData |
-| "2Code"/"1Code" | **有** | **无** |
-| 脚本长度 | 可变（通常 > 2000B） | **固定**: 卖单=946B, 买单=1010B |
-| NTape (4e54617065) | **vout[1] 有** | **无** |
-| vout[0] satoshis | >= 1000（Pool NFT dust） | 卖单=saleVolume（大额），买单=300（固定） |
-
-**OrderBook 脚本特征**:
-- 卖单脚本固定 946 字节，末尾有 OrderData
-- 买单脚本固定 1010 字节，末尾有 OrderData
-- OrderData 结构（脚本最后 6 个 chunk，共 114 字节）:
-  `holdAddress(20B) + saleVolume(8B LE) + ftPartialHash(32B) + feeRate(8B LE) + unitPrice(8B LE) + ftContractId(32B)`
-
-**OrderBook 子类型识别**:
-
-| 操作 | 关键特征 |
-|------|---------|
-| **Make Sell Order** | vout[0]=卖单脚本(946B), satoshis=saleVolume（大额TBC锁定），vin 全是 P2PKH |
-| **Make Buy Order** | vout[0]=买单脚本(1010B), satoshis=300, vout[1-2]=FT Code+Tape 锁定到买单 hash，vin 含 FT 输入 |
-| **Cancel Sell** | vin[0]=卖单 UTXO（解锁用 `<sig> <pubkey> OP_2`），vout[0]=P2PKH 退回 TBC |
-| **Cancel Buy** | vin[0]=买单 UTXO + vin[1]=锁定的 FT，vout[0-1]=FT Code+Tape 退回持有者 |
-| **Match Order** | vin[0]=买单 + vin[1]=锁定FT + vin[2]=卖单，vout 含: FT给卖方(vout[0-1]) + FT手续费(vout[2-3]) + TBC给买方(vout[4]) + TBC手续费(vout[5])。可能含部分成交的新订单(vout[7+]) |
-
-**3) FT 交易** — 排除 Pool、OrderBook、**FTLP 独立操作**（上面识别流程第 2 步）后，vout 的 hex 末尾包含 `4654617065`（"FTape"）且**无 `02436f6465` 标记**（有 02Code 的是 FTLP 不是普通 FT）
-
-> **🚨 强制前置检查（必须在判断子类型之前执行）：**
-> 1. 查看每个 vin 的来源交易，提取每个输入所属的地址
-> 2. 如果所有 vin 来源地址**相同** → 继续下面的子类型判断
-> 3. 如果 vin 来源地址有**2个或以上不同地址** → **停！直接跳到规则 10) 复合分析**
->
-> 子类型判断（仅当确认为单方输入后）：
-> - **FT Mint**：**输入是 TBC（无 FT 输入）**，输出是 FT（Code=500sat + Tape=0sat）
-> - **FT Transfer**：**输入包含 FT UTXO**，输出是 FT，可能有找零 Code+Tape
-
-- **FT Batch Transfer**：多个接收者的 Code+Tape 对
-- **FT Merge**：多个 FT 输入 → 1 个 FT 输出（合并 UTXO）
-- 进一步用 `/ft/decode/txid/{txid}` 获取 contract_id、地址、金额等可读信息
-- 再用 `/ft/info/contract/{contract_id}` 获取代币名称、符号、精度、总量
-
-**4) NFT 交易** — 排除 Pool 后（Pool 的 NTape 已在步骤 1 识别），vout 的 hex 末尾包含 `4e54617065`（"NTape"）或 `4e486f6c64`（"NHold"）
-
-> **🚨 强制前置检查（必须在判断子类型之前执行）：**
-> 1. 查看每个 vin 的来源交易（用 vin.txid + vin.vout 找到对应的前序输出），提取每个输入所属的地址
-> 2. 如果所有 vin 来源地址**相同**（或只有一个签名者）→ 继续下面的子类型判断
-> 3. 如果 vin 来源地址有**2个或以上不同地址** → **停！这是原子交换交易，直接跳到规则 10) 复合分析**。不要判断为 NFT Mint/Transfer。
->
-> **判断依据**：标准 NFT 操作（Mint/Transfer）的所有输入都来自同一个所有者。多方输入意味着多方各自签名了这笔交易，这只在原子交换场景下发生。
-
-子类型判断（仅当上面确认为单方输入后）：
-- **NFT Collection Create**：Tape(0sat) + 多个 Mint script(100sat each, 含 `"V0 Mint NHold"`)
-- **NFT Mint**：Code(200sat) + Hold(100sat, 含 `"V0 Curr NHold"`) + Tape(0sat, "NTape")
-- **NFT Transfer**：vin 含 Code+Hold 两个输入 + TBC 手续费输入；输出 3 个 — Code(200sat) + Hold(100sat, 新 owner) + Tape(0sat)，TBC 找零回同一人
-- **NFT Batch Mint**：多组 Code+Hold+Tape
-- Tape 的 OP_RETURN 数据是 hex 编码的 JSON，解码后含 name/description/attributes
-- NFT `file` 字段 = `collection_id` + `outputIndex`(4字节小端 hex)，唯一标识集合中的每个 NFT
-
-NFT 流程: 创建集合(TBC输入) → 生成 Mint UTXO → 作为输入创建 NFT → 生成 NFT UTXO → 作为输入转移 NFT
-
-**5) MultiSig 交易** — vout 有 P2SH 脚本 `OP_HASH160 <20B hash> OP_EQUAL`（type: "scripthash"）
-- 创建多签钱包输出结构：Output 1 = 主 P2SH 输出, Output 2~N+1 = 每个公钥一个 Hold(200sat), Output N+2 = Tape(0sat, 记录多签配置)
-- 锁定脚本: `OP_<M> OP_SWAP <split/pick/cat验证ops> OP_HASH160 <hash> OP_EQUALVERIFY OP_<N> OP_CHECKMULTISIG`（pubkeys 在花费时提供并通过 hash 验证，不是裸嵌入），解锁需 `OP_0` + M 个签名 + redeemScript
-- 多签交易流程: 构建(任一方) → 分发给各方签名 → 各方分别签名 → 聚合签名完成 → 广播
-- 用 `/multisig/multisigaddress/address/{a}` 查询多签钱包信息
-
-**6) HTLC 交易** — 脚本包含 `OP_IF OP_SHA256` 分支结构
-- **Deploy**：创建 HTLC 合约
-- **Withdraw**：提供 preimage 取款
-- **Refund**：超时退款
-
-**7) StableCoin 交易** — stableCoin 继承 FT，链上表现与 FT 相同（有 FTape 标记），但有特殊操作：
-- **CreateCoin（首次发行）**：产生两笔交易 — 第一笔创建 coinNFT 证书（含 NTape），第二笔铸造 FT（含 FTape）。识别：同一批广播的两笔 tx，一个有 NFT 输出 + 一个有 FT 输出
-- **MintCoin（增发）**：vin 消费 coinNFT + 输出新 coinNFT（更新供应量）+ 新 FT 输出
-- **transfer/batchTransfer**：与普通 FT 完全相同
-- **frozenCoinUTXO**：FT transfer 但 tape 中含 locktime 信息
-- 区分 stableCoin vs 普通 FT: 看该 contract_id 是否关联了 coinNFT 证书
-
-**8) PiggyBank 交易** — vout 含特殊时间锁脚本：`OP_DUP OP_HASH160 <pkh> OP_EQUALVERIFY OP_CHECKSIGVERIFY OP_6 OP_PUSH_META ... <lockTimeHex> OP_BIN2NUM OP_2 OP_PUSH_META OP_BIN2NUM OP_LESSTHANOREQUAL OP_1 OP_EQUAL`
-- **FreezeTBC**：vin 是标准 TBC → vout 有 PiggyBank 时间锁脚本（检查脚本含 `OP_CHECKSIGVERIFY OP_6 OP_PUSH_META`）
-- **UnfreezeTBC**：vin 消费 PiggyBank UTXO（时间锁已过期）→ vout 回到标准 P2PKH
-- 不是普通 P2PKH（含 OP_PUSH_META），也不是 HTLC（没有 OP_IF 分支）
-
-**9) 纯 TBC 转账** — 所有 vout 都是标准 P2PKH（type: "pubkeyhash"），无合约标记
-
-**10) 混合/原子交换交易（不匹配以上任何单一模板）**
-
-> **⚠️ 极其重要：如果一笔交易同时包含多种资产类型的特征，或者不完全符合上面任何单一模板，不要强行归类为某一种——它很可能是利用 UTXO 原子性设计的复合交易。**
-
-**识别信号**（出现任一即触发复合分析）:
-- 输入来自**多个不同的地址/所有者**（多方交易）
-- 同时包含 NFT 标记（NTape/NHold）**和**大额 P2PKH 输出到不同地址
-- 同时包含 FT 标记（FTape）**和** NFT 标记
-- 输出中资产流向与标准模板不同（如 NFT 转给 A，但 TBC 转给 B，而不是同一人）
-- 交易结构符合已知合约模板但有"多余"的输入/输出
-
-**遇到此类交易时，切换到"资产导向分析"模式**:
-
-> **🚨 核心原则：从资产流向判断交易本质，不要从地址归属判断。**
-> 输入可能来自聚合地址/平台地址/做市商地址，不能假设"输入方=最终用户"。
-> 唯一可靠的判断依据是：**什么资产去了什么地址**。
-
-```
-Step 1: 分类所有输出 — 按资产类型将 vout 分组：
-  - NFT 输出: 含 NHold/NTape 标记的 vout（NFT Code + Hold + Tape）
-  - FT 输出: 含 FTape 标记的 vout（FT Code + Tape）
-  - TBC 输出: 标准 P2PKH 的 vout
-
-Step 2: 识别"主动转移" — 这是关键！
-  核心资产（NFT/FT）的接收地址 = 这笔交易的核心目的
-  - NFT Hold (vout) 的 P2PKH 地址 → NFT 接收方
-  - FT Code (vout) 内嵌的地址 → FT 接收方
-
-Step 3: 分析 TBC 输出 — 区分"支付"和"找零"
-  规则：如果交易同时有 NFT/FT 转移和多个 TBC P2PKH 输出：
-  - 金额最大的 TBC 输出（且地址 ≠ NFT/FT 接收方地址）→ 很可能是对价支付
-  - 金额较小的 TBC 输出 → 找零
-  - 如果只有一个 TBC P2PKH 输出 → 纯找零（无对价支付 = 赠送/转移）
-
-Step 4: 推断交易类型:
-  - NFT 转移 + 大额 TBC 到不同地址 → NFT 原子买卖（NFT→买家，TBC→卖家）
-  - NFT 转移 + 无大额 TBC 对价 → 普通 NFT 转移
-  - FT 转移 + 大额 TBC 到不同地址 → FT-TBC 原子交换
-  - NFT 转移 + FT 转移 → NFT-FT 原子交换
+OP_FALSE OP_RETURN <partialHashes:64B> <amountData:24B> <ft_a_contractTxid:32B>
+  [v2额外: serviceFeeRate:1B lpPlan:1B withLock:1B withLockTime:1B] 4e54617065
+amountData = 3 × uint64LE: [ft_lp_amount, ft_a_amount, tbc_amount(satoshis)]
 ```
 
-> **⚠️ "找零" vs "支付" 判断**: 不要猜。看整笔交易的上下文：
-> - 如果有 NFT 从地址 A 的输入转到了地址 B 的输出，同时有大额 TBC 输出到地址 A（或其他非 B 地址），那个 TBC 就是**买家 B 支付给卖家的款项**。
-> - 聚合地址模式：输入可能全来自同一个平台地址，但 NFT 和 TBC 输出到了**不同的最终用户地址**——NFT 去买家，TBC 去卖家。
+**Pool 操作的本质区分**（不用死记 vout 数量，理解每个操作做了什么）：
 
-**常见复合交易类型**:
+| 操作 | 本质 | 你会看到什么 |
+|------|------|-------------|
+| **Create** | 创建空池子 | Pool NFT(1000sat) + NTape(amountData 全 0)，**无任何代币输出** |
+| **Init** | 首次注入流动性 | Pool NFT + NTape(amountData 从 0 变为非 0) + FTAbyC + FTAbyC Tape + FTLP + FTLP Tape |
+| **Add LP** | 追加流动性 | 结构同 Init，区别是 NTape 的 amountData **之前已有非零值** |
+| **Remove LP** | 撤出流动性 | Pool NFT + NTape + FTAbyA(退还给用户的 FT) + **P2PKH(退还 TBC)** + **FTLP burn 到 EaterAddress** |
+| **Swap TBC→FT** | 用 TBC 换 FT | Pool NFT(sat 增加) + NTape + FTAbyA(FT 给用户) + FTAbyC。**无 FTLP** |
+| **Swap FT→TBC** | 用 FT 换 TBC | Pool NFT(sat 减少) + NTape + **P2PKH(TBC 给用户)** + FTAbyC。**无 FTLP** |
+| **Merge FT in Pool** | 合并池内 FT 碎片 | Pool NFT + NTape + FTAbyC。amountData 不变 |
 
-| 模式 | 关键特征 | 判断方法 | 业务含义 |
-|------|---------|---------|---------|
-| **NFT 原子买卖** | NFT 输出 + 大额 TBC 输出到不同地址 | NFT 接收方=买家，TBC 接收方=卖家 | NFT 市场交易 |
-| **普通 NFT 转移** | NFT 输出 + 只有小额 TBC 找零 | NFT 换了地址但无对价 | 赠送/自转 |
-| **FT-TBC 原子交换** | FT 输出 + 大额 TBC 输出到不同地址 | FT 接收方和 TBC 接收方不同 | 场外 OTC |
-| **FT-FT 原子交换** | 两种不同 FT 输出到不同地址 | 各自获得对方的 FT | 跨代币 swap |
-| **批量空投** | 多个小额 FT/TBC 到不同地址 | 一对多分发 | 空投 |
+**v1 vs v2**：v1 末尾 `31436f6465`，v2 末尾 `32436f6465`。v2 的 Pool NFT sat = 1000 + tbc_amount（TBC 存在 NFT 本体上），v1 固定 1000。
 
-**识别示例**（NFT 原子买卖 — 聚合地址模式）:
+#### FTLP 独立操作（无 Pool NFT 参与）
+
+**核心理解**：FTLP（LP Token）本身也是一种 FT，用 `02436f6465` 标记。有两种独立操作**不涉及 Pool NFT**：
+
+| 操作 | 本质 | vout[0] 目标地址 |
+|------|------|-----------------|
+| **Merge FTLP** | 合并多个 LP UTXO | 用户自己的地址 |
+| **Burn FTLP** | 销毁 LP Token | `1BitcoinEaterAddressDontSendf59kuE`（hash160: `759d6677091e973b9e9d99f19c68fbf43e3f05f9`） |
+
+**识别特征**：vout[0] 末尾 `02436f6465`，vout[1] 末尾 `4654617065`，**无 Pool NFT 输出**（无 `2Code`/`1Code` + `NTape` 组合）。satoshis = 500。
+
+**Burn vs Merge 区分**：看 vout[0] 脚本 ASM 倒数第二个元素（`02436f6465` 前面的 hex），前 40 字符 = 目标 hash160。如果是 `759d6677091e973b9e9d99f19c68fbf43e3f05f9` → Burn；否则 → Merge。
+
+**⚠️ 为什么容易误识别**：FTLP Code 内部含 `FTape` 验证逻辑（它本质是一种 FT），所以如果只看"有没有 FTape"，FTLP 会被误判为普通 FT。**必须先检查 `02436f6465`**。
+
+#### OrderBook（链上 DEX）
+
+**核心理解**：OrderBook 用**固定长度脚本**锁定资产。不含 `2Code`/`1Code`/`02436f6465`。
+
+| 特征 | 值 |
+|------|-----|
+| 卖单脚本 | 固定 **946 字节**，末尾 `OP_1 OP_RETURN` + 0xFF 填充 + OrderData(114B) |
+| 买单脚本 | 固定 **1010 字节**，末尾 `OP_1 OP_RETURN` + 0xFF 填充 + OrderData(114B) |
+| 买单 dust | **300 sat** |
+| OrderData | holdAddress(20B) + saleVolume(8B) + ftPartialHash(32B) + feeRate(8B) + unitPrice(8B) + ftContractId(32B) |
+
+**子类型本质**：
+- **Make Sell**：锁定 TBC（saleVolume）到卖单脚本。vin 全是 P2PKH。
+- **Make Buy**：锁定 FT 到买单关联的 FT Code。vout[0]=买单脚本(300sat)，vout[1-2]=FT Code+Tape。
+- **Cancel Sell/Buy**：解锁资产退回持有者。vin[0] 是订单 UTXO。
+- **Match**：买单+卖单+FT 同时消费，FT 给卖方，TBC 给买方，含手续费输出。可能有部分成交的新订单。
+
+#### FT（同质化代币）
+
+**核心理解**：FT Code 末尾 `32436f6465`（"2Code"），Tape 末尾 `4654417065`（"FTape"）。每个 FT 输出 = Code(500sat) + Tape(0sat) 一对。
+
+**判断前提**：确认 vout[0]+vout[1] 不是 Pool NFT（Pool 也以 `2Code` 结尾，但 vout[1] 是 `NTape` 而不是 `FTape`），且 vout[0] 末尾不是 `02436f6465`（FTLP）。
+
+**子类型本质**：
+- **Mint**：vin 只有 TBC（无 FT 输入），输出 Code+Tape。实际上是两笔链式交易（source+mint）。
+- **Transfer**：vin 含 FT Code UTXO + TBC 手续费，输出 Code+Tape 到接收方，可能有 FT 找零。
+- **Batch Transfer**：多个 Code+Tape 对，每个到不同地址。
+- **Merge**：多个 FT 输入 → 1 个 FT 输出。
+
+**⚠️ 多方输入检查**：如果 vin 来自多个不同地址 → 不是普通 FT 操作，是原子交换（见下文"复合交易"）。
+
+#### NFT（非同质化代币）
+
+**核心理解**：NFT Code 末尾 `33436f6465`（"3Code"），Hold 含 `NHold`，Tape 含 `NTape`。每个 NFT = Code(200sat) + Hold(100sat) + Tape(0sat) 三件套。
+
+**子类型本质**：
+- **Collection Create**：Tape(0sat) + N 个 Mint 槽位(100sat each，含 "V0 Mint NHold")。
+- **Mint**：消费 Mint 槽位 → 生成 Code(200sat) + Hold(100sat，"V0 Curr NHold") + Tape(0sat)。
+- **Transfer**：消费 Code+Hold → 输出新 Code+Hold（Hold 地址变了）+ Tape。
+- **TransferWithTBC**：Transfer + 额外一个 P2PKH 输出（附带 TBC 发送）。
+
+**⚠️ 多方输入检查**：同 FT。多方输入 = 原子交换。
+
+#### 其他合约
+
+**MultiSig**：Hold 输出含 `6d756c7469736967`（"multisig"），Tape 含 `4d54617065`（"MTape"）。锁定脚本含 `OP_CHECKMULTISIG`。
+
+**HTLC**：脚本含 `OP_IF OP_SHA256 <hashlock> OP_EQUALVERIFY` 分支。Deploy = 创建锁定输出，Withdraw = 提供 preimage 解锁，Refund = 超时解锁。
+
+**StableCoin**：继承 FT，链上表现相同（`FTape` 标记）。CreateCoin 产生两笔交易（coinNFT 证书 + FT 铸造）。MintCoin 消费 coinNFT 输出新 coinNFT + 新 FT。
+
+**PiggyBank**：脚本含 `OP_CHECKSIGVERIFY OP_6 OP_PUSH_META`（时间锁验证）。FreezeTBC = 创建锁定输出，UnfreezeTBC = 花费到期锁定输出。
+
+#### 纯 TBC 转账
+
+所有 vout 都是标准 P2PKH（type: "pubkeyhash"），无任何合约标记。
+
+### 分析思维：不要匹配模板，要读懂交易
+
+**当你拿到一笔交易时，不要想"它匹配哪个规则"，而是问这些问题：**
+
+1. **输出里有什么资产？** 扫描所有 vout 的脚本末尾标记：
+   - 有 `2Code`/`1Code` + 紧邻的 `NTape` → Pool NFT 参与
+   - 有 `02436f6465` → FTLP 参与
+   - 有 `2Code` + 紧邻的 `FTape` → 普通 FT（非 Pool）
+   - 有 `33436f6465` / `NHold` / `NTape`（无 Pool NFT 上下文） → NFT
+   - 固定长度非标准脚本（946B/1010B） → OrderBook
+   - 全 P2PKH → 纯 TBC 转账
+
+2. **谁参与了这笔交易？** 检查所有 vin 的来源地址：
+   - 所有 vin 来自同一地址 → 标准单方操作
+   - 多个不同地址的 vin → **多方交易，可能是原子交换**
+
+3. **资产流向了哪里？** 对每种资产，看它最终到了谁的地址：
+   - NFT Hold 的 P2PKH 地址 = NFT 接收方
+   - FT Code 内嵌的 hash160 = FT 接收方
+   - P2PKH 输出 = TBC 接收方（区分支付 vs 找零）
+
+4. **这笔交易的业务目的是什么？** 把 1-3 的信息综合起来推断。
+
+### 复合/原子交换交易
+
+**UTXO 的原子性意味着一笔交易里的所有动作不可分割。当多种资产出现在同一笔交易中、且资产流向不同地址时，这就是原子交换。**
+
+**识别信号**：
+- 多方输入（不同地址提供不同资产）
+- NFT 输出和大额 TBC 输出到**不同**地址
+- 多种合约标记共存且流向不同方
+
+**分析方法（资产导向）**：
+1. 分类所有输出：NFT / FT / TBC
+2. 找核心资产的接收方（NFT Hold 地址、FT Code 内嵌地址）
+3. 大额 TBC 到非核心资产接收方的地址 → 对价支付
+4. 小额 TBC → 找零
+5. 推断交易本质（买卖、互换、附带转账）
+
+**常见原子模式**：
+
+| 模式 | 特征 | 含义 |
+|------|------|------|
+| NFT 输出 + 大额 TBC 到不同地址 | NFT→A, TBC→B | **NFT 买卖** |
+| FT 输出 + 大额 TBC 到不同地址 | FT→A, TBC→B | **FT-TBC OTC** |
+| NFT 输出 + FT 输出到不同地址 | NFT→A, FT→B | **NFT-FT 互换** |
+| 只有 NFT 输出 + 小额 TBC 找零 | NFT 换了地址无对价 | **NFT 赠送/自转** |
+
+> **⚠️ 聚合地址场景**：输入可能全来自平台地址，但 NFT 和 TBC 输出到了不同的最终用户地址。不要因为"输入都是一个地址"就排除原子交换——看输出流向。
+
+**示例**（NFT 原子买卖 — 聚合地址模式）:
 ```
 交易 f79e71a5...:
-  输入: NFT Code+Hold + TBC（可能来自聚合地址/平台）
-
-  vout[0]: NFT Code (200sat)    → nonstandard
-  vout[1]: NFT Hold (100sat)    → 1KxWjKn2... ← 这是 NFT 接收方（买家）
+  vout[0]: NFT Code (200sat)    → nonstandard（33436f6465 结尾）
+  vout[1]: NFT Hold (100sat)    → 1KxWjKn2...  ← NFT 接收方
   vout[2]: NTape (0sat)         → OP_RETURN
-  vout[3]: TBC (2.88535)        → 1C1YhZB5... ← 大额 TBC，地址≠买家 → 这是卖家收款
-  vout[4]: TBC (0.10365)        → 146W5c4H... ← 小额 TBC → 找零
-
-  分析:
-  - 核心资产: NFT "马到成功" → 转给了 1KxWjKn2...（买家）
-  - 对价支付: 2.88535 TBC → 转给了 1C1YhZB5...（卖家）
-  - 找零: 0.10365 TBC → 146W5c4H...
-  → NFT 原子买卖：买家用 ~2.89 TBC 购买了"马到成功" NFT
+  vout[3]: TBC (2.88535)        → 1C1YhZB5...  ← 大额 TBC，地址≠NFT 接收方 → 卖家收款
+  vout[4]: TBC (0.10365)        → 146W5c4H...  ← 小额 → 找零
+  → 结论: NFT 原子买卖，买家用 ~2.89 TBC 购买了 NFT
 ```
 
-### Step 3: 组装结果（必须做完才回复用户）
+### 最终输出要求
 
-Step 1-3 是一个完整流程，**必须全部执行完才回复用户**。不要执行到一半就发消息问"需要继续吗"。
-
-最终输出应包含：
-- **交易类型**：如 "FT Transfer" / "Pool Swap (TBC→FT)" / "NFT 原子买卖"
-- **关键地址**：发送方、接收方（如果是多方交易，列出所有参与方及其角色）
-- **代币信息**（如适用）：contract_id、name、symbol、decimal
-- **金额**：FT 数量（注意 decimal 转换）、TBC 数量
-- **池子信息**（如适用）：pool_id、swap 方向、换入/换出金额
-- **原子关系**（如适用）：谁给了什么、换到了什么、为什么是安全的
-
-**示例输出**：
-> 这是一笔 **FT Transfer** 交易。地址 `1ABC...` 向 `1XYZ...` 转了 **300,000 SATOSHI**（contract: `a2d7...86f3`，精度 6 位，即 300 枚）。
-
-> 这是一笔 **Pool Swap (TBC→FT)** 交易。用户通过 Pool `d1ab...dfc6` 用 **5 TBC** 换得 **12,500 SpaceDoge**。
-
-> 这是一笔 **NFT 原子买卖** 交易。卖方 `1Bob...` 将 NFT `abc123` 转给买方 `1Ali...`，同时买方支付 **0.05 TBC** 给卖方。交易利用 UTXO 原子性保证双方资产同时交割，任何一方无法单方面违约。
+分析完毕后一次性给出：
+- **交易类型**（如 FT Transfer / Pool Swap TBC→FT / NFT 原子买卖）
+- **关键地址和角色**（发送方、接收方、卖方、买方）
+- **代币信息**（contract_id、name、symbol、decimal）
+- **金额**（FT 数量含精度转换、TBC 数量）
+- **池子/订单信息**（如适用）
+- **原子关系**（如适用：谁给了什么换到了什么）
 
 ## Script Hex 标记速查
 
-| 标记 | Hex | 含义 |
-|------|-----|------|
-| FTape | `4654617065` | FT Tape 输出标识 |
-| NTape | `4e54617065` | NFT Tape 输出标识 |
-| NHold | `4e486f6c64` | NFT Hold 输出标识 |
-| 2Code | `32436f6465` | Pool NFT v2 Code 脚本末尾标识 |
-| 1Code | `31436f6465` | Pool NFT v1 Code 脚本末尾标识 |
-| \x02Code | `02436f6465` | FTLP Code 脚本末尾标识 |
-| V0 Mint NHold | `5630204d696e74204e486f6c64` | NFT 集合 Mint slot 标识 |
-| V0 Curr NHold | `56302043757272204e486f6c64` | NFT 当前持有者标识 |
-| for ft mint | `666f722066742(...)` | FT Mint source TX flag |
-| OP_CHECKSIGVERIFY OP_6 OP_PUSH_META | `ad56ba` | PiggyBank 时间锁脚本特征（紧跟在 P2PKH 验证后） |
+| 标记 | Hex | 含义 | 使用者 |
+|------|-----|------|--------|
+| **2Code** | `32436f6465` | Code 脚本末尾 | Pool NFT v2, **普通 FT Code** |
+| **1Code** | `31436f6465` | Code 脚本末尾 | Pool NFT v1 |
+| **\x02Code** | `02436f6465` | Code 脚本末尾 | **FTLP (LP Token)** |
+| **3Code** | `33436f6465` | Code 脚本末尾 | **NFT Code** |
+| **FTape** | `4654617065` | Tape 数据标识 | FT Tape, FTLP Tape, StableCoin Tape |
+| **NTape** | `4e54617065` | Tape 数据标识 | NFT Tape, **Pool NFT Tape (含池状态)** |
+| **NHold** | `4e486f6c64` | Hold 权益标识 | NFT Hold |
+| **MTape** | `4d54617065` | Tape 数据标识 | **MultiSig Tape** |
+| V0 Mint NHold | `5630204d696e74204e486f6c64` | Mint 槽位 | NFT 集合 Mint slot |
+| V0 Curr NHold | `56302043757272204e486f6c64` | 当前持有者 | NFT 当前 Hold |
+| multisig | `6d756c7469736967` | Hold 标识 | MultiSig Hold(200sat) |
+| for ft mint | `666f722066742(...)` | Source TX flag | FT Mint 的 source 交易 |
+| OP_CHECKSIGVERIFY OP_6 OP_PUSH_META | `ad56ba` | 时间锁特征 | PiggyBank |
 
 ## 交易线格式 (Wire Format)
 
@@ -340,10 +304,15 @@ nVersion (int32 LE) → vin (CompactSize + vector) → vout (CompactSize + vecto
 
 ## Script Structure (Quick Ref)
 
-**FT Code**: 数百操作码的智能合约脚本（含 OP_PARTIAL_HASH, OP_PUSH_META, 输入验证循环），末尾 `OP_RETURN 0x15 <pubKeyHash+00:21B> 0x05 0x32436f6465`("2Code"). **注意**: `OP_DUP OP_HASH160 ... OP_CHECKSIG OP_RETURN <flag>` 是 MintFT 的 source tx 输出（flag="for ft mint"），不是 FT Code 脚本本身
+**FT Code**: 复杂合约脚本（含 OP_PARTIAL_HASH, OP_PUSH_META），末尾 `OP_RETURN 0x15 <hash160+00:21B> 0x05 0x32436f6465`("2Code")。v1=1564B，v2=1884B。
+**FTLP Code**: 同 FT Code 结构，但末尾 `OP_RETURN 0x15 <hash160+00:21B> 0x05 0x02436f6465`("\x02Code")。
+**NFT Code**: 末尾 `0x05 0x33436f6465`("3Code")。Code=200sat。
 **FT Tape**: `OP_FALSE OP_RETURN <amount:48B = 6×uint64LE> <decimal:1B> <name> <symbol> "FTape"`
-**NFT Hold**: `... OP_RETURN "V0 Curr NHold"`
-**NFT Tape**: `OP_FALSE OP_RETURN <JSON hex> "NTape"`
+**NFT Hold**: `... OP_RETURN "V0 Curr NHold"` (100sat) 或 `"V0 Mint NHold"` (Collection slot, 100sat)
+**NFT Tape**: `OP_FALSE OP_RETURN <JSON hex> "NTape"` (0sat)
+**Pool NFT Tape**: `OP_FALSE OP_RETURN <partialHashes:64B> <amountData:24B> <contractId:32B> [v2:4B extra] "NTape"` (0sat)
+**MultiSig Tape**: `OP_FALSE OP_RETURN <config data> "MTape"` (0sat)
+**MintFT Source**: `OP_DUP OP_HASH160 ... OP_CHECKSIG OP_RETURN "for ft mint"` (9900sat) — 不是 FT Code
 
 FT amount = 6 slots of uint64LE (48 bytes, supports merging up to 6 UTXOs). Mint 时 slot 0 有金额, slots 1-5 为 0; Transfer 时 `buildTapeAmount` 将多个输入金额分配到各 slot. Each FT output: Code=500sat, Tape=0sat. Each NFT output: Code=200sat, Hold=100sat.
 FT max supply constraint: `maxAmount = 10^(18 - decimal)`.
