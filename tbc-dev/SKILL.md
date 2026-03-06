@@ -60,9 +60,9 @@ MultiSig, HTLC, OrderBook, PiggyBank (standalone)
 
 ### Step 1: 获取交易数据
 
-用 `nodes run` 执行 curl（不要用 browser，不要用 web_fetch）：
+调用 API 获取交易详情：
 ```
-["curl", "-s", "https://api.turingbitchain.io/api/tbc/decode/txid/{txid}"]
+curl -s https://api.turingbitchain.io/api/tbc/decode/txid/{txid}
 ```
 返回包含完整的 vin/vout/scriptPubKey 信息。如需原始 hex 可用 `/txraw/txid/{txid}`。
 
@@ -92,7 +92,7 @@ Pool 子类型通过**输出结构**区分（SDK 源码验证）：
 | **Swap FT→TBC** | 5-8+change | 减少（v2: -amount） | **无 FTLP 输出**。vout[2]=P2PKH TBC 给用户 + vout[3-4]=FTAbyC。vout[0] sat < vin Pool sat |
 | **Merge FT in Pool** | 4+change | 不变 | Pool NFT + NTape + FTAbyC 合并（amountData 不变） |
 | **Merge FTLP** | 2+change | **无 Pool NFT** | 只有 FTLP Code+Tape（末尾 `02436f6465` + `4654617065`），无 Pool NFT |
-| **Burn FTLP** (v2) | 2+change | **无 Pool NFT** | FTLP 发送到 burn 地址 |
+| **Burn FTLP** (v2) | 2+change | **无 Pool NFT** | 与 Merge FTLP 结构相同，**唯一区别**：FTLP Code（vout[0]）的目标地址是 `1BitcoinEaterAddressDontSendf59kuE`（销毁地址） |
 
 **识别流程**:
 ```
@@ -106,7 +106,9 @@ Pool 子类型通过**输出结构**区分（SDK 源码验证）：
      - vout[0] satoshis 增加（vs vin Pool NFT）？→ Swap TBC→FT
      - vout[0] satoshis 减少？→ Swap FT→TBC
      - vout[0] satoshis 不变？→ Merge FT in Pool
-3. 无 vout[0] Pool NFT 但有 02436f6465 标记？→ Merge FTLP 或 Burn FTLP
+3. 无 vout[0] Pool NFT 但有 02436f6465 标记？→ 检查 FTLP Code 输出的目标地址：
+     - 地址是 1BitcoinEaterAddressDontSendf59kuE → **Burn FTLP**
+     - 地址是用户自己的地址（非 burn） → **Merge FTLP**
 ```
 
 **NTape amountData 解析**（Pool NFT Tape = vout[1]）:
@@ -151,11 +153,14 @@ amountData = 3 个 uint64LE:
 
 **3) FT 交易** — 排除 Pool 和 OrderBook 后，vout 的 hex 末尾包含 `4654617065`（"FTape"）且**无 Pool NFT Code 标记**
 
-> **⚠️ 判断 Mint vs Transfer 看输入类型，不是看输出脚本标记！**
+> **🚨 强制前置检查（必须在判断子类型之前执行）：**
+> 1. 查看每个 vin 的来源交易，提取每个输入所属的地址
+> 2. 如果所有 vin 来源地址**相同** → 继续下面的子类型判断
+> 3. 如果 vin 来源地址有**2个或以上不同地址** → **停！直接跳到规则 10) 复合分析**
+>
+> 子类型判断（仅当确认为单方输入后）：
 > - **FT Mint**：**输入是 TBC（无 FT 输入）**，输出是 FT（Code=500sat + Tape=0sat）
 > - **FT Transfer**：**输入包含 FT UTXO**，输出是 FT，可能有找零 Code+Tape
-
-> **⚠️ 同样检查原子交换！** 标准 FT Transfer 所有输入来自同一所有者。如果输入来自**多个不同地址**，且有 TBC/其他资产对向流动 → 跳到规则 10) 复合分析。
 
 - **FT Batch Transfer**：多个接收者的 Code+Tape 对
 - **FT Merge**：多个 FT 输入 → 1 个 FT 输出（合并 UTXO）
@@ -164,11 +169,17 @@ amountData = 3 个 uint64LE:
 
 **4) NFT 交易** — 排除 Pool 后（Pool 的 NTape 已在步骤 1 识别），vout 的 hex 末尾包含 `4e54617065`（"NTape"）或 `4e486f6c64`（"NHold"）
 
-> **⚠️ 关键：匹配到 NFT 标记后，还要检查是否是"原子交换"！** 标准 NFT Transfer 的所有输入来自同一个所有者（NFT Code+Hold + TBC 手续费都是同一人的）。如果输入来自**多个不同地址**，且有非 NFT 资产（大额 TBC / FT）流向与 NFT 不同的方向 → 这不是普通 NFT Transfer，而是**原子交换交易**，跳到规则 10) 进行复合分析。
+> **🚨 强制前置检查（必须在判断子类型之前执行）：**
+> 1. 查看每个 vin 的来源交易（用 vin.txid + vin.vout 找到对应的前序输出），提取每个输入所属的地址
+> 2. 如果所有 vin 来源地址**相同**（或只有一个签名者）→ 继续下面的子类型判断
+> 3. 如果 vin 来源地址有**2个或以上不同地址** → **停！这是原子交换交易，直接跳到规则 10) 复合分析**。不要判断为 NFT Mint/Transfer。
+>
+> **判断依据**：标准 NFT 操作（Mint/Transfer）的所有输入都来自同一个所有者。多方输入意味着多方各自签名了这笔交易，这只在原子交换场景下发生。
 
+子类型判断（仅当上面确认为单方输入后）：
 - **NFT Collection Create**：Tape(0sat) + 多个 Mint script(100sat each, 含 `"V0 Mint NHold"`)
 - **NFT Mint**：Code(200sat) + Hold(100sat, 含 `"V0 Curr NHold"`) + Tape(0sat, "NTape")
-- **NFT Transfer**：vin 含 Code+Hold 两个输入 + TBC 手续费输入（**全部来自同一所有者**）；输出 3 个 — Code(200sat) + Hold(100sat, 新 owner) + Tape(0sat)，**TBC 找零回同一人**
+- **NFT Transfer**：vin 含 Code+Hold 两个输入 + TBC 手续费输入；输出 3 个 — Code(200sat) + Hold(100sat, 新 owner) + Tape(0sat)，TBC 找零回同一人
 - **NFT Batch Mint**：多组 Code+Hold+Tape
 - Tape 的 OP_RETURN 数据是 hex 编码的 JSON，解码后含 name/description/attributes
 - NFT `file` 字段 = `collection_id` + `outputIndex`(4字节小端 hex)，唯一标识集合中的每个 NFT
