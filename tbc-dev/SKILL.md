@@ -27,15 +27,15 @@ TBC = Bitcoin sidechain, SHA256 PoW, UTXO model, JS/TS smart contracts.
 
 | Contract | Purpose | Key Methods |
 |----------|---------|-------------|
-| **FT** | Fungible token | `MintFT`, `transfer(privateKey, addr, amount, utxos, preTX, prepreTxData, tbc_amount?)`, `batchTransfer`, `mergeFT` |
-| **NFT** | Non-fungible token | `createCollection`, `createNFT`, `transferNFT`, `batchCreateNFT` |
-| **poolNFT** | AMM liquidity pool v1 | `createPoolNFT`, `initPoolNFT`, `increaseLP`, `consumeLP`, `swaptoToken_baseTBC`, `swaptoTBC_baseToken` |
-| **poolNFT2** | Pool v2 (lock, fee plans) | Same + `createPoolNftWithLock`, `burnFTLP`, lock time support |
-| **OrderBook** | On-chain DEX | `buildSellOrderTX`, `buildBuyOrderTX`, `matchOrder`, cancel orders |
-| **MultiSig** | M-of-N multisig (1-6 sigs, 3-10 keys) | `createMultiSigWallet`, `p2pkhToMultiSig_sendTBC`, `p2pkhToMultiSig_transferFT`, `build/sign/finish MultiSigTransaction_sendTBC/transferFT` (含 batch 变体) |
-| **HTLC** | Hash time-lock (atomic swap) | `deployHTLC`, `withdraw`, `refund`, `fillSigDepoly`(注意拼写), `fillSigWithdraw`, `fillSigRefund` |
-| **StableCoin** | Admin-controlled FT (extends FT) + coinNFT cert | `createCoin` → returns `[coinNftTXRaw, coinMintRaw]`, `mintCoin`, `burnCoin`, `transfer` (inherited) |
-| **PiggyBank** | TBC time-lock freeze | `freezeTBC(address, tbcNumber, lockTime, utxos)`, `unfreezeTBC(address, utxos, network?)`, `fetchTBCLockTime(utxo)` |
+| **FT** | Fungible token | `MintFT`, `transfer`, `transferWithAdditionalInfo`, `batchTransfer`, `mergeFT` |
+| **NFT** | Non-fungible token | `createCollection`, `createNFT`, `transferNFT`, `transferNFTWithTBC`, `batchCreateNFT` |
+| **poolNFT** | AMM liquidity pool v1 | `createPoolNFT`, `initPoolNFT`, `increaseLP`, `consumeLP`, `swaptoToken_baseTBC`, `swaptoTBC_baseToken`, `mergeFTLP`, `mergeFTinPool` |
+| **poolNFT2** | Pool v2 (lock, fee, plans) | v1 全部 + `burnFTLP`, `unlockFTLP`, `initPoolNFTWithLockTime`, `increaseLpWithLockTime`, `consumeLpWithLockTime`, `swaptoTBC_baseToken_local`, `fetchFtlpBalance/UTXOList/LockTime` |
+| **OrderBook** | On-chain DEX | `makeSellOrder`, `makeBuyOrder`, `cancelSellOrder`, `cancelBuyOrder`, `matchOrder` (每种有 privateKey / Online / fillSigs 三种模式) |
+| **MultiSig** | M-of-N multisig (1-6 sigs, 3-10 keys) | `createMultiSigWallet`, `p2pkhToMultiSig_sendTBC/transferFT`, `build/sign/finish MultiSigTransaction_sendTBC/transferFT` (含 batch 变体) |
+| **HTLC** | Hash time-lock (atomic swap) | `deployHTLC`, `withdraw`, `refund`, `fillSigDepoly`(SDK拼写), `fillSigWithdraw`, `fillSigRefund`, `deployHTLCWithSign`, `withdrawWithSign`, `refundWithSign` |
+| **stableCoin** | Admin-controlled FT (extends FT) + coinNFT cert | `createCoin` → `[coinNftTXRaw, coinMintRaw]`, `mintCoin`, `transfer`(override), `batchTransfer`(override), `mergeCoin`, `frozenCoinUTXO` |
+| **piggyBank** | TBC time-lock freeze | `freezeTBC(address, tbcNumber, lockTime, utxos)`, `unfreezeTBC(address, utxos, network?)`, `fetchTBCLockTime(utxo)` |
 
 ### Contract Inheritance
 
@@ -219,9 +219,201 @@ All paths relative to base URL. Pagination max: 500. Full docs: `skills/tbc-dev/
 
 **注意**: 几乎所有 FT/地址端点都有对应的 `combinescript` 变体（如 `/ft/tokenbalance/combinescript/{cs}/contract/{id}`）。`combine_script` 是 21 字节 hex 字符串，用于标识持有者。
 
-## SDK API Methods (Key)
+## SDK Complete Method Reference
 
-`API.fetchUTXO(privateKey, amount, network)` | `API.fetchFtUTXOs(contractTxid, addr, codeScript, network, amountBN)` | `API.fetchFtInfo(contractTxid, network)` | `API.fetchTXraw(txid, network)` | `API.fetchFtPrePreTxData(preTX, outputIndex, network)` | `API.broadcastTXraw(txraw, network)` | `API.broadcastTXsraw(txraws, network)` | `buildUTXO(tx, vout, isFT)` | `parseDecimalToBigInt(amount, decimal)`
+### FT (Fungible Token)
+
+```
+constructor(txidOrParams?: string | { name, symbol, amount, decimal })
+initialize(ftInfo: FtInfo): void
+MintFT(privateKey, address_to, utxo) → string[] [txSourceRaw, txMintRaw]
+transfer(privateKey, address_to, ft_amount, ftutxo_a[], utxo, preTX[], prepreTxData[], tbc_amount?) → string
+transferWithAdditionalInfo(privateKey, address_to, amount, ftutxo_a[], utxo, preTX[], prepreTxData[], additionalInfo: Buffer) → string
+batchTransfer(privateKey, receiveAddressAmount: Map<string, number|string>, ftutxo[], utxo, preTX[], prepreTxData[]) → {txraw}[]
+mergeFT(privateKey, ftutxo[], utxo, preTX[], prepreTxData[], localTX[]) → {txraw}[] (递归合并, 每批最多5个)
+```
+Key constants: Code=500sat, Tape=0sat, max decimal=18, max amount=10^(18-decimal), merge batch=5, fee=80sat/KB
+
+### NFT (Non-Fungible Token)
+
+```
+constructor(contract_id: string)
+initialize(nftInfo: NFTInfo): void
+transferNFT(address_from, address_to, privateKey, utxos[], pre_tx, pre_pre_tx, batch=false) → string
+transferNFTWithTBC(address_from, address_to_nft, address_to_tbc, privateKey, utxos[], pre_tx, pre_pre_tx, tbc_amount) → string
+static createCollection(address, privateKey, data: CollectionData, utxos[]) → string
+static createNFT(collection_id, address, privateKey, data: NFTData, utxos[], nfttxo) → string
+static batchCreateNFT(collection_id, address, privateKey, datas[], utxos[], nfttxos[]) → {txraw}[]
+```
+Key constants: Code=200sat, Hold=100sat, Tape=0sat, collection mint=100sat each
+
+### poolNFT v1
+
+```
+constructor(config?: { txidOrParams?: string | { ftContractTxid, tbc_amount, ft_a }, network? })
+async initCreate(ftContractTxid?) | async initfromContractId()
+async createPoolNFT(privateKey, utxo) → string[]
+async createPoolNftWithLock(privateKey, utxo) → string[]
+async initPoolNFT(privateKey, address_to, utxo, tbc_amount?, ft_a?) → string
+async increaseLP(privateKey, address_to, utxo, amount_tbc) → string
+async consumeLP(privateKey, address_to, utxo, amount_lp) → string
+async swaptoToken_baseTBC(privateKey, address_to, utxo, amount_tbc) → string
+async swaptoTBC_baseToken(privateKey, address_to, utxo, amount_token) → string
+async swaptoToken(deprecated) | async swaptoTBC(deprecated)
+async mergeFTLP(privateKey, utxo) → boolean|string
+async mergeFTinPool(privateKey, utxo) → boolean|string
+```
+
+### poolNFT2 (v2 独有方法)
+
+```
+async initPoolNFTWithLockTime(privateKey, address_to, utxo, tbc_amount, ft_a, lock_time) → string
+async increaseLpWithLockTime(privateKey, address_to, utxo, amount_tbc, lock_time) → string
+async consumeLpWithLockTime(privateKey, address_to, utxo, amount_lp) → string
+async swaptoTBC_baseToken_local(privateKey, address_to, ftutxo, ftPreTX[], ftPrePreTxData[], amount_token, lpPlan?, utxo?) → string
+async burnFTLP(privateKey, utxo) → string
+async unlockFTLP(privateKey, utxo, lock_time?) → string|null
+async fetchFtlpBalance(address) → bigint
+async fetchFtlpUTXOList(address) → IUnspentOutput[]
+async fetchFtlpLockTime(address) → {ftBalance, lockTime}[]
+async getPoolNftExtraInfo() → {serviceFeeRate, lpPlan, withLock, withLockTime}
+```
+v2 createPoolNFT 新增参数: `tag`, `serviceFeeRate?`, `lpPlan?: 1|2`, `withLockTime?`
+v2 createPoolNftWithLock 新增参数: `tag`, `lpCostAddress`, `lpCostTBC`, `pubKeyLock[]`
+v2 移除: `swaptoToken`(deprecated), `swaptoTBC`(deprecated)
+
+### OrderBook (On-chain DEX)
+
+三种模式: ① privateKey 离线签名, ② privateKeyOnline 自动获取 UTXO, ③ build + fillSigs 分步签名
+
+```
+// 卖单
+buildSellOrderTX(holdAddr, saleVolume, unitPrice, feeRate, ftID, ftPartialHash, utxos[]) → string
+makeSellOrder_privateKey(privateKey, saleVolume, unitPrice, feeRate, ftID, ftPartialHash, utxos[])
+async makeSellOrder_privateKeyOnline(privateKey, saleVolume, unitPrice, feeRate, ftID)
+fillSigsSellOrder(txRaw, sigs[], publicKey, type: "make"|"cancel") → string
+buildCancelSellOrderTX(sellutxo, utxos[]) → string
+cancelSellOrder_privateKey(privateKey, sellutxo, utxos[])
+async cancelSellOrder_privateKeyOnline(privateKey, sellutxo)
+
+// 买单
+buildBuyOrderTX(holdAddr, saleVolume, unitPrice, feeRate, ftID, utxos[], ftutxos[], preTXs[]) → string
+makeBuyOrder_privateKey(privateKey, saleVolume, unitPrice, feeRate, ftID, utxos[], ftutxos[], preTXs[], prepreTxData[])
+async makeBuyOrder_privateKeyOnline(privateKey, saleVolume, unitPrice, feeRate, ftID)
+fillSigsMakeBuyOrder(txRaw, sigs[], publicKey, preTXs[], prepreTxData[]) → string
+buildCancelBuyOrderTX(buyutxo, ftutxo, ftPreTX, utxos[]) → string
+cancelBuyOrder_privateKey(privateKey, buyutxo, buyPreTX, ftutxo, ftPreTX, ftPrePreTxData, utxos[])
+async cancelBuyOrder_privateKeyOnline(privateKey, buyutxo)
+fillSigsCancelBuyOrder(txRaw, sigs[], publicKey, buyPreTX, ftPreTX, ftPrePreTxData) → string
+
+// 撮合
+matchOrder(privateKey, buyutxo, buyPreTX, ftutxo, ftPreTX, ftPrePreTxData, sellutxo, sellPreTX, utxos[], ftFeeAddr, tbcFeeAddr) → string
+async matchOrderOnline(privateKey, buyutxo, sellutxo, ftFeeAddr, tbcFeeAddr)
+
+// 工具
+static getOrderData(codeScript) → { holdAddress, saleVolume, ftPartialHash, feeRate, unitPrice, ftID }
+static updateSaleVolume(codeScript, newSaleVolume) → Script
+```
+
+### stableCoin (extends FT)
+
+```
+createCoin(privateKey_admin, address_to, utxo, utxoTX, mintMessage?) → string[] [coinNftTXRaw, coinMintRaw]
+mintCoin(privateKey_admin, address_to, mintAmount, utxo, nftPreTX, nftPrePreTX, mintMessage?) → string
+transfer(override, 继承 FT) | batchTransfer(override, 继承 FT)
+mergeCoin(privateKey, utxo, ftutxo[], preTX[], prepreTxData[]) → {txraw}[]
+frozenCoinUTXO(privateKey, ftutxo, utxo, preTX, prepreTxData, locktime) → string
+static buildCoinNftOutput(data: coinNftData) | static buildCoinNftTX(privateKey, utxo, data)
+static getCoinMintCode(adminAddr, toAddr, originCodeHash, tapeSize)
+static setLockTimeInTape(tapeScript, locktime) | static getLockTimeFromTape(tapeScript)
+static getAddressFromCode(codeScript)
+```
+使用 `feePerKb(80)`. coinNFT 证书为 "The sole issuance certificate for the stablecoin, dynamically recording cumulative supply and issuance history."
+
+### HTLC
+
+```
+deployHTLC(sender, receiver, hashlock, timelock, amount, utxo) → string
+withdraw(receiver, htlcUtxo) → string
+refund(sender, htlcUtxo, timelock) → string
+fillSigDepoly(deployHTLCTxRaw, sig, publicKey) → string   // 注意 SDK 拼写 Depoly
+fillSigWithdraw(withdrawTxRaw, secret, sig, publicKey) → string
+fillSigRefund(refundTxRaw, sig, publicKey) → string
+deployHTLCWithSign(sender, receiver, hashlock, timelock, amount, utxo, privateKey) → string
+withdrawWithSign(receiver, htlcUtxo, secret, privateKey) → string
+refundWithSign(sender, htlcUtxo, timelock, privateKey) → string
+```
+
+### API Class (33 static methods)
+
+**TBC 原生:**
+```
+getTBCbalance(address, network?) → number
+fetchUTXOList(address, network?) → IUnspentOutput[]
+fetchUTXO(privateKey, amount, network?) → IUnspentOutput (自动选择)
+getUTXOs(address, amount_tbc, network?) → IUnspentOutput[]
+mergeUTXO(privateKey, network?) → boolean
+fetchTXraw(txid, network?) → Transaction
+broadcastTXraw(txraw, network?) → string (txid)
+broadcastTXsraw(txrawList: {txraw}[], network?) → any
+fetchBlockHeaders(network?) → BlockHeader[]
+```
+
+**FT 相关:**
+```
+getFTbalance(contractTxid, addressOrHash, network?) → bigint
+fetchFtUTXO(contractTxid, addressOrHash, amount, codeScript, network?) → IUnspentOutput
+fetchFtUTXOs(contractTxid, addressOrHash, codeScript, network?, amount?) → IUnspentOutput[]
+fetchFtUTXOList(contractTxid, addressOrHash, codeScript, network?) → IUnspentOutput[]
+fetchFtUTXOsforPool(contractTxid, addressOrHash, amount, number, codeScript, network?) → IUnspentOutput[]
+fetchFtInfo(contractTxid, network?) → FtInfo
+fetchFtPrePreTxData(preTX, preTxVout, network?) → string
+fetchFtUTXOS_multiSig(contractTxid, addressOrHash, codeScript, network?) → IUnspentOutput[]
+getFtUTXOS_multiSig(contractTxid, addressOrHash, codeScript, amount, network?) → IUnspentOutput[]
+```
+
+**NFT 相关:**
+```
+fetchNFTInfo(contract_id, network?) → NFTInfo
+fetchNFTTXO({script, tx_hash?, network?}) → IUnspentOutput
+fetchNFTTXOs({script, tx_hash, network?}) → IUnspentOutput[]
+fetchNFTs(collection_id, address, start, end, network?) → string[]
+```
+
+**Pool 相关:**
+```
+fetchPoolNftInfo(contractTxid, network?) → PoolNFTInfo
+fetchPoolNftUTXO(contractTxid, network?) → IUnspentOutput
+fetchFtlpBalance(ftlpCode, network?) → bigint
+fetchFtlpUTXO(ftlpCode, amount, network?) → IUnspentOutput
+```
+
+**多签/冻结/其他:**
+```
+fetchUMTXO(script_asm, tbc_amount, network?) → IUnspentOutput (用于MultiSig等非标脚本)
+fetchUMTXOs(script_asm, network?) → IUnspentOutput[]
+getUMTXOs(script_asm, amount_tbc, network?) → IUnspentOutput[]
+fetchFrozenTBCBalance(address, network?) → number
+fetchFrozenUTXOList(address, network?) → IUnspentOutput[]
+fetchUnfrozenUTXOList(address, network?) → IUnspentOutput[]
+```
+
+### Utility Functions (从 tbc-contract 导出)
+
+```
+buildUTXO(tx, vout, isFT?) → IUnspentOutput          // 从 Transaction 对象构造 UTXO
+buildFtPrePreTxData(preTX, preTxVout, localTXs[]) → string  // 本地计算 prePreTxData
+getFtBalanceFromTape(tape: string) → bigint            // 从 tape hex 读取 FT 余额
+selectTXfromLocal(txs[], txid) → Transaction           // 从本地 TX 数组查找
+parseDecimalToBigInt(amount, decimal) → bigint         // 金额转 BigInt
+fetchInBatches(items[], batchSize, fetchFn, context) → R[]  // 批量请求
+fetchWithRetry(fn, retries?, delay?, context?) → T     // 带重试的请求
+getOpCode(number) → string                            // 数字转操作码
+getLpCostAddress(poolCode) → string                    // 从 Pool 代码获取 LP 成本地址
+getLpCostAmount(poolCode) → number                     // 从 Pool 代码获取 LP 成本金额
+isLock(length) → 0|1                                   // 判断是否有锁
+fetchTBCLockTime(utxo) → number                        // 获取 UTXO 锁定时间
+```
 
 ## Node Deployment (Quick)
 
@@ -279,15 +471,12 @@ Key config: `excessiveblocksize=10000000000`, `txindex=1`, `rpcport=8332`
 
 Post-Genesis: P2SH 输出被禁止；OP_RETURN 格式从 `OP_RETURN <data>` 变为 `OP_FALSE OP_RETURN <data>`；脚本大小和操作码数量限制移除（最大 4GB）；启用 OP_MUL, OP_DIV, OP_MOD, OP_CAT, OP_SPLIT 等操作码.
 
-## HTLC 两阶段签名（硬件钱包/远程签名）
+## HTLC 脚本细节
 
-```
-fillSigDepoly(deployHTLCTxRaw, sig, publicKey)         — 填充 deploy 交易签名（注意: SDK中拼写为 Depoly）
-fillSigWithdraw(withdrawTxRaw, secret, sig, publicKey) — 填充 withdraw 交易签名+原像
-fillSigRefund(refundTxRaw, sig, publicKey)             — 填充 refund 交易签名
-```
-
-HTLC 脚本使用 OP_SHA256（非 OP_HASH256）做 hashlock 验证, 用 OP_PUSH_META 做时间验证. Refund 路径需要 `setInputSequence(0, 4294967294)` + `setLockTime(timelock)`.
+HTLC 使用 OP_SHA256（非 OP_HASH256）做 hashlock 验证, OP_PUSH_META 做时间验证.
+Refund 路径: `setInputSequence(0, 4294967294)` + `setLockTime(timelock)`.
+三种使用方式: ① deploy/withdraw/refund (返回未签名 raw), ② fillSig* (分步填充签名), ③ *WithSign (直接用 privateKey 签名).
+注意 SDK 中 `fillSigDepoly` 是 typo（不是 Deploy）。
 
 ## 中心化 Swap 模式（交易分析时注意）
 
@@ -310,6 +499,31 @@ TBC 节点的 `CTxnPropagator` 每 250ms 批量处理新交易，存在以下已
 2. 缺失则用 `/broadcasttx` 重新广播
 3. 关键交易实现重试循环：broadcast → wait 2s → check mempool → rebroadcast if missing
 4. 用 `/broadcasttxs` 批量发送到多个 API 端点
+
+## SDK Key Types / Interfaces
+
+```typescript
+FtInfo { contractTxid?, codeScript, tapeScript, totalSupply: bigint, decimal, name, symbol }
+NFTInfo { collectionId, collectionIndex, collectionName, nftName, nftSymbol, nft_attributes, nftDescription, nftTransferTimeCount, nftIcon }
+NFTData { nftName, symbol, description, attributes, file? }
+CollectionData { collectionName, description, supply, file }
+PoolNFTInfo { ft_lp_amount: bigint, ft_a_amount: bigint, tbc_amount: bigint, ft_lp_partialhash, ft_a_partialhash, ft_a_contractTxid, service_fee_rate, service_provider, poolnft_code, pool_version, currentContractTxid, currentContractVout, currentContractSatoshi }
+coinNftData { nftName, nftSymbol, description, coinDecimal, coinTotalSupply: bigint }
+```
+
+## SDK Key Constants
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| FT Code satoshis | 500 | 所有 FT code 输出 |
+| FT Mint source satoshis | 9900 | MintFT source TX |
+| NFT Code satoshis | 200 | NFT code 输出 |
+| NFT Hold satoshis | 100 | NFT hold 输出, collection mint slots |
+| Pool NFT v1 satoshis | 1000 | Pool NFT code 输出 |
+| Fee rate | 80 sat/KB | 或 flat 80 (tx < 1000 bytes) |
+| FT merge batch size | 5 | 每轮最多合并 5 个 FT UTXO |
+| TBC decimal places | 6 | parseDecimalToBigInt 中 TBC 用 6 位精度 |
+| OrderBook buy_code_dust | 300 | 买单 code 输出 satoshis |
 
 ## 深入学习资源
 
