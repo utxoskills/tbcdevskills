@@ -70,31 +70,11 @@ MultiSig, HTLC, OrderBook, PiggyBank (standalone)
 
 ### Step 2: 判断交易类型
 
-检查 vout 的 scriptPubKey，按以下优先级匹配：
+检查 vout 的 scriptPubKey，按以下**严格优先级**匹配（顺序很重要！合约特有标记优先于通用标记）：
 
-**1) FT 交易** — vout 的 hex 末尾包含 `4654617065`（"FTape" 的 hex）
+> **⚠️ 优先级原因**：Pool 交易的 FTAbyC 输出也含 `4654617065`（FTape），Pool 的 NTape 也含 `4e54617065`（NTape）。如果先查 FTape/NTape 会把 Pool 错误识别为 FT/NFT。必须先排除 Pool 和 OrderBook。
 
-> **⚠️ 关键修正：判断 Mint vs Transfer 看输入类型，不是看输出脚本标记！**
-> - `2Code`（32436f6465）出现在 Code 脚本中，Mint 和 Transfer 都有，不能用来区分
-> - **FT Mint**：**输入是 TBC（无 FT 输入）**，输出是 FT（Code=500sat + Tape=0sat）
-> - **FT Transfer**：**输入包含 FT UTXO**，输出是 FT，可能有找零 Code+Tape
-
-- **FT Batch Transfer**：多个接收者的 Code+Tape 对
-- **FT Merge**：多个 FT 输入 → 1 个 FT 输出（合并 UTXO）
-- 进一步用 `/ft/decode/txid/{txid}` 获取 contract_id、地址、金额等可读信息
-- 再用 `/ft/info/contract/{contract_id}` 获取代币名称、符号、精度、总量（返回含 `code_script`, `tape_script`, `creator_combine_script`）
-
-**2) NFT 交易** — vout 的 hex 末尾包含 `4e54617065`（"NTape"）或 `4e486f6c64`（"NHold"）
-- **NFT Collection Create**：Tape(0sat) + 多个 Mint script(100sat each, 含 `"V0 Mint NHold"`)
-- **NFT Mint**：Code(200sat) + Hold(100sat, 含 `"V0 Curr NHold"`) + Tape(0sat, "NTape")
-- **NFT Transfer**：需要两个输入 — Code input (index 0, 需合约解锁数据) + Hold input (index 1, 标准 P2PKH 签名)；输出 3 个 — Code(200sat) + Hold(100sat, 新 owner pubKeyHash) + Tape(0sat)
-- **NFT Batch Mint**：多组 Code+Hold+Tape
-- Tape 的 OP_RETURN 数据是 hex 编码的 JSON，解码后含 name/description/attributes
-- NFT `file` 字段 = `collection_id` + `outputIndex`(4字节小端 hex)，唯一标识集合中的每个 NFT
-
-NFT 流程: 创建集合(TBC输入) → 生成 Mint UTXO → 作为输入创建 NFT → 生成 NFT UTXO → 作为输入转移 NFT
-
-**3) Pool 交易** — vout[0] 的脚本末尾含 `32436f6465`（"2Code"，Pool v2）或 `31436f6465`（"1Code"，Pool v1），且 vout[0] satoshis >= 1000。vout[1] 是 NTape（末尾 `4e54617065`）。
+**1) Pool 交易（最先检查！）** — vout[0] 的脚本末尾含 `32436f6465`（"2Code"，Pool v2）或 `31436f6465`（"1Code"，Pool v1），且 vout[0] satoshis >= 1000。vout[1] 是 NTape（末尾 `4e54617065`）。
 
 > **⚠️ 重要纠正**：Pool 脚本中**没有** "bison"（6269736f6e）标记！这是一个常见误解。"bison" 可能出现在 `serverProvider_tag` 参数中但**不在脚本里**。正确的识别标记是 `32436f6465`（"2Code"）或 `31436f6465`（"1Code"）。
 
@@ -141,7 +121,7 @@ amountData = 3 个 uint64LE:
 
 **v1 vs v2 区分**: v1 末尾是 `31436f6465`（"1Code"），v2 末尾是 `32436f6465`（"2Code"）。v2 的 NTape 在 `4e54617065` 前多 4 个字节（serviceFeeRate, lpPlan, withLock, withLockTime）。
 
-**4) OrderBook 交易** — vout[0] 的脚本末尾**不含** `32436f6465`/`31436f6465`（与 Pool 区分），而是以 `OP_1 OP_RETURN`（`516a`）+ 0xFF 填充 + OrderData 结构结尾。
+**2) OrderBook 交易** — vout 含非标准脚本（**不含** `32436f6465`/`31436f6465`），脚本以 `OP_1 OP_RETURN`（`516a`）+ 0xFF 填充 + OrderData 结构结尾。脚本长度固定：卖单=946B，买单=1010B。
 
 **OrderBook vs Pool 的关键区分**（SDK 源码验证）：
 
@@ -169,6 +149,32 @@ amountData = 3 个 uint64LE:
 | **Cancel Buy** | vin[0]=买单 UTXO + vin[1]=锁定的 FT，vout[0-1]=FT Code+Tape 退回持有者 |
 | **Match Order** | vin[0]=买单 + vin[1]=锁定FT + vin[2]=卖单，vout 含: FT给卖方(vout[0-1]) + FT手续费(vout[2-3]) + TBC给买方(vout[4]) + TBC手续费(vout[5])。可能含部分成交的新订单(vout[7+]) |
 
+**3) FT 交易** — 排除 Pool 和 OrderBook 后，vout 的 hex 末尾包含 `4654617065`（"FTape"）且**无 Pool NFT Code 标记**
+
+> **⚠️ 判断 Mint vs Transfer 看输入类型，不是看输出脚本标记！**
+> - **FT Mint**：**输入是 TBC（无 FT 输入）**，输出是 FT（Code=500sat + Tape=0sat）
+> - **FT Transfer**：**输入包含 FT UTXO**，输出是 FT，可能有找零 Code+Tape
+
+> **⚠️ 同样检查原子交换！** 标准 FT Transfer 所有输入来自同一所有者。如果输入来自**多个不同地址**，且有 TBC/其他资产对向流动 → 跳到规则 10) 复合分析。
+
+- **FT Batch Transfer**：多个接收者的 Code+Tape 对
+- **FT Merge**：多个 FT 输入 → 1 个 FT 输出（合并 UTXO）
+- 进一步用 `/ft/decode/txid/{txid}` 获取 contract_id、地址、金额等可读信息
+- 再用 `/ft/info/contract/{contract_id}` 获取代币名称、符号、精度、总量
+
+**4) NFT 交易** — 排除 Pool 后（Pool 的 NTape 已在步骤 1 识别），vout 的 hex 末尾包含 `4e54617065`（"NTape"）或 `4e486f6c64`（"NHold"）
+
+> **⚠️ 关键：匹配到 NFT 标记后，还要检查是否是"原子交换"！** 标准 NFT Transfer 的所有输入来自同一个所有者（NFT Code+Hold + TBC 手续费都是同一人的）。如果输入来自**多个不同地址**，且有非 NFT 资产（大额 TBC / FT）流向与 NFT 不同的方向 → 这不是普通 NFT Transfer，而是**原子交换交易**，跳到规则 10) 进行复合分析。
+
+- **NFT Collection Create**：Tape(0sat) + 多个 Mint script(100sat each, 含 `"V0 Mint NHold"`)
+- **NFT Mint**：Code(200sat) + Hold(100sat, 含 `"V0 Curr NHold"`) + Tape(0sat, "NTape")
+- **NFT Transfer**：vin 含 Code+Hold 两个输入 + TBC 手续费输入（**全部来自同一所有者**）；输出 3 个 — Code(200sat) + Hold(100sat, 新 owner) + Tape(0sat)，**TBC 找零回同一人**
+- **NFT Batch Mint**：多组 Code+Hold+Tape
+- Tape 的 OP_RETURN 数据是 hex 编码的 JSON，解码后含 name/description/attributes
+- NFT `file` 字段 = `collection_id` + `outputIndex`(4字节小端 hex)，唯一标识集合中的每个 NFT
+
+NFT 流程: 创建集合(TBC输入) → 生成 Mint UTXO → 作为输入创建 NFT → 生成 NFT UTXO → 作为输入转移 NFT
+
 **5) MultiSig 交易** — vout 有 P2SH 脚本 `OP_HASH160 <20B hash> OP_EQUAL`（type: "scripthash"）
 - 创建多签钱包输出结构：Output 1 = 主 P2SH 输出, Output 2~N+1 = 每个公钥一个 Hold(200sat), Output N+2 = Tape(0sat, 记录多签配置)
 - 锁定脚本: `OP_<M> OP_SWAP <split/pick/cat验证ops> OP_HASH160 <hash> OP_EQUALVERIFY OP_<N> OP_CHECKMULTISIG`（pubkeys 在花费时提供并通过 hash 验证，不是裸嵌入），解锁需 `OP_0` + M 个签名 + redeemScript
@@ -194,21 +200,79 @@ amountData = 3 个 uint64LE:
 
 **9) 纯 TBC 转账** — 所有 vout 都是标准 P2PKH（type: "pubkeyhash"），无合约标记
 
+**10) 混合/原子交换交易（不匹配以上任何单一模板）**
+
+> **⚠️ 极其重要：如果一笔交易同时包含多种资产类型的特征，或者不完全符合上面任何单一模板，不要强行归类为某一种——它很可能是利用 UTXO 原子性设计的复合交易。**
+
+**识别信号**（出现任一即触发复合分析）:
+- 输入来自**多个不同的地址/所有者**（多方交易）
+- 同时包含 NFT 标记（NTape/NHold）**和**大额 P2PKH 输出到不同地址
+- 同时包含 FT 标记（FTape）**和** NFT 标记
+- 输出中资产流向与标准模板不同（如 NFT 转给 A，但 TBC 转给 B，而不是同一人）
+- 交易结构符合已知合约模板但有"多余"的输入/输出
+
+**遇到此类交易时，切换到"原子性分析"模式**（参考下面"UTXO 原子性设计哲学"章节）:
+
+```
+Step 1: 列出所有输入 — 每个 vin 花费的是什么类型的 UTXO？属于谁（地址）？
+Step 2: 列出所有输出 — 每个 vout 的资产类型？去了谁的地址？
+Step 3: 画出资产流向图:
+  - 谁失去了什么？（输入被消费）
+  - 谁获得了什么？（输出到新地址）
+Step 4: 找原子绑定关系:
+  - 如果 A 失去 NFT 且 B 失去 TBC，同时 A 获得 TBC 且 B 获得 NFT → NFT 原子买卖
+  - 如果 A 失去 FT 且 B 失去 TBC，同时 A 获得 TBC 且 B 获得 FT → FT-TBC 原子交换
+  - 如果 A 失去 FT-X 且 B 失去 FT-Y → 跨代币原子交换
+Step 5: 推断业务语义 — 这是什么应用场景？
+```
+
+**常见复合交易类型**:
+
+| 模式 | 输入特征 | 输出特征 | 业务含义 |
+|------|---------|---------|---------|
+| **NFT 原子买卖** | NFT Code+Hold (卖方) + TBC (买方) | NFT→买方 + TBC→卖方 | NFT 市场交易 |
+| **NFT 转移+附带 TBC** | NFT Code+Hold + TBC | NFT→接收方 + TBC→接收方 | NFT 赠送/打赏 |
+| **FT-TBC 原子交换** | FT (A方) + TBC (B方) | FT→B + TBC→A | 场外交易 OTC |
+| **FT-FT 原子交换** | FT-X (A方) + FT-Y (B方) | FT-X→B + FT-Y→A | 跨代币 swap |
+| **批量空投** | TBC/FT (发送方) | 多个小额 FT/TBC 到不同地址 | 空投分发 |
+| **多签+合约组合** | MultiSig + FT/NFT | 各种 | 治理操作 |
+
+**识别示例**（NFT 原子买卖）:
+```
+交易 d669a42f...:
+  vin[0]: NFT Code UTXO → 来自地址 1Bob... (卖方)
+  vin[1]: NFT Hold UTXO → 来自地址 1Bob... (卖方)
+  vin[2]: TBC UTXO      → 来自地址 1Ali... (买方)
+
+  vout[0]: NFT Code (200sat) → 地址 1Ali... (买方获得 NFT)
+  vout[1]: NFT Hold (100sat) → 地址 1Ali... (买方获得 NFT)
+  vout[2]: NTape (0sat)       → OP_RETURN 数据
+  vout[3]: TBC (50000sat)    → 地址 1Bob... (卖方获得 TBC)
+  vout[4]: TBC (找零)        → 地址 1Ali... (买方找零)
+
+  分析: Bob 失去 NFT，获得 50000 sat TBC
+        Alice 失去 TBC，获得 NFT
+  → 这是一笔 NFT 原子买卖交易，Alice 用 0.05 TBC 购买了 Bob 的 NFT
+```
+
 ### Step 3: 组装结果（必须做完才回复用户）
 
 Step 1-3 是一个完整流程，**必须全部执行完才回复用户**。不要执行到一半就发消息问"需要继续吗"。
 
 最终输出应包含：
-- **交易类型**：如 "FT Transfer" / "Pool Swap (TBC→FT)"
-- **关键地址**：发送方、接收方
+- **交易类型**：如 "FT Transfer" / "Pool Swap (TBC→FT)" / "NFT 原子买卖"
+- **关键地址**：发送方、接收方（如果是多方交易，列出所有参与方及其角色）
 - **代币信息**（如适用）：contract_id、name、symbol、decimal
 - **金额**：FT 数量（注意 decimal 转换）、TBC 数量
 - **池子信息**（如适用）：pool_id、swap 方向、换入/换出金额
+- **原子关系**（如适用）：谁给了什么、换到了什么、为什么是安全的
 
 **示例输出**：
 > 这是一笔 **FT Transfer** 交易。地址 `1ABC...` 向 `1XYZ...` 转了 **300,000 SATOSHI**（contract: `a2d7...86f3`，精度 6 位，即 300 枚）。
 
 > 这是一笔 **Pool Swap (TBC→FT)** 交易。用户通过 Pool `d1ab...dfc6` 用 **5 TBC** 换得 **12,500 SpaceDoge**。
+
+> 这是一笔 **NFT 原子买卖** 交易。卖方 `1Bob...` 将 NFT `abc123` 转给买方 `1Ali...`，同时买方支付 **0.05 TBC** 给卖方。交易利用 UTXO 原子性保证双方资产同时交割，任何一方无法单方面违约。
 
 ## Script Hex 标记速查
 
