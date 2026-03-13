@@ -29,23 +29,9 @@
 
 - **从 Cursor 安装**：在 Cursor 中打开 Plugins 面板，搜索 `tbc-dev` 或添加 Team Marketplace（见下方）
 - **Team Marketplace**：在 Cursor 团队后台 → Settings → Plugins → Team Marketplaces → Import，填入 `https://github.com/utxoskills/tbcdevskills`
-- **本地试用**：`claude --plugin-dir ./tbcdevskills`（若已安装 Claude Code CLI）
+- **本地试用**：将仓库 clone 到本地，在 Cursor 中添加 Team Marketplace 并选择该目录
 
-### 方式 2：Claude Code（`/plugin add`）
-
-本仓库同时包含 `.claude-plugin/plugin.json`，支持 [Claude Code](https://code.claude.com) 插件格式。
-
-```bash
-# 安装（需 Claude Code 1.0.33+）
-/plugin add utxoskills/tbcdevskills
-
-# 本地开发试用
-claude --plugin-dir ./tbcdevskills
-```
-
-安装后技能为 `/tbc-dev:tbc-dev`（命名空间:技能名）。
-
-### 方式 3：OpenClaw
+### 方式 2：OpenClaw
 
 ```bash
 npx skills add utxoskills/tbcdevskills

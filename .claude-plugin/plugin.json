@@ -1,9 +1,0 @@
-{
-  "name": "tbc-dev",
-  "version": "1.0.0",
-  "description": "TBC (TuringBitChain) blockchain development — contracts, transactions, API, node ops. Use when user asks about TBC contracts, transactions, or API.",
-  "author": { "name": "utxoskills" },
-  "repository": "https://github.com/utxoskills/tbcdevskills",
-  "keywords": ["tbc", "blockchain", "utxo", "smart-contract", "turingbitchain"],
-  "skills": "."
-}
