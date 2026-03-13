@@ -1,0 +1,26 @@
+[
+  {
+    "txid": "ec87c0449bbbe55150dac266cc1ab273e8de226608e7a45de5f7b6518999e867",
+    "network": "testnet",
+    "expectedType": "Burn FTLP",
+    "notes": "Independent FTLP burn. No Pool NFT output. vout[0] ends with 02436f6465 and targets EaterAddress."
+  },
+  {
+    "txid": "c12c67eb08b8fb4432758c183cd14e4d57fb4a805ec65c3ffb117f02afd24c8e",
+    "network": "testnet",
+    "expectedType": "Add LP",
+    "notes": "Pool NFT + NTape + FTAbyC + FTLP structure. Should not be classified as OrderBook."
+  },
+  {
+    "txid": "f79e71a5dd4c5656f026fe4758df880c4b6342cc7d634193f3ffa3a1e019c690",
+    "network": "mainnet",
+    "expectedType": "NFT atomic sale",
+    "notes": "NFT changes owner while large TBC pays seller. Must distinguish payment from change."
+  },
+  {
+    "txid": "d669a42ff0290ec23d0ae64b9e5f23e535b3f3f3eb7fcae0a6a8a691cb0dd822",
+    "network": "mainnet",
+    "expectedType": "NFT atomic sale",
+    "notes": "Canonical atomic settlement example using UTXO all-or-nothing semantics."
+  }
+]
