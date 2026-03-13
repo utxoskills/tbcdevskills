@@ -23,6 +23,36 @@
 
 ## 安装
 
+### 方式 1：Cursor 插件（Marketplace 风格）
+
+本仓库已包含 `.cursor-plugin/plugin.json`，符合 [Cursor 插件规范](https://cursor.com/docs/reference/plugins)。
+
+- **从 Cursor 安装**：在 Cursor 中打开 Plugins 面板，搜索 `tbc-dev` 或添加 Team Marketplace（见下方）
+- **Team Marketplace**：在 Cursor 团队后台 → Settings → Plugins → Team Marketplaces → Import，填入 `https://github.com/utxoskills/tbcdevskills`
+- **本地试用**：`claude --plugin-dir ./tbcdevskills`（若已安装 Claude Code CLI）
+
+### 方式 2：Claude Code（`/plugin add`）
+
+本仓库同时包含 `.claude-plugin/plugin.json`，支持 [Claude Code](https://code.claude.com) 插件格式。
+
+```bash
+# 安装（需 Claude Code 1.0.33+）
+/plugin add utxoskills/tbcdevskills
+
+# 本地开发试用
+claude --plugin-dir ./tbcdevskills
+```
+
+安装后技能为 `/tbc-dev:tbc-dev`（命名空间:技能名）。
+
+### 方式 3：OpenClaw
+
+```bash
+npx skills add utxoskills/tbcdevskills
+```
+
+### 方式 3：手动软链接
+
 ```bash
 git clone https://github.com/utxoskills/tbcdevskills.git
 ln -sf $(pwd)/tbcdevskills/tbc-dev ~/.openclaw/workspace/skills/tbc-dev
@@ -30,11 +60,9 @@ ln -sf $(pwd)/tbcdevskills/tbc-dev ~/.openclaw/workspace/skills/tbc-dev
 
 ## 更新
 
-```bash
-cd tbcdevskills && git pull
-```
-
-软链接安装后，`git pull` 即可让 Agent 下次会话使用最新知识，无需额外操作。
+- **Cursor**：插件更新需在 [cursor.com/marketplace/publish](https://cursor.com/marketplace/publish) 提交新版本，审核通过后用户可在 Plugins 面板看到更新
+- **Team Marketplace**：仓库 `git push` 后，团队管理员在后台刷新/重新导入即可拉取最新内容
+- **OpenClaw / 软链接**：`cd tbcdevskills && git pull`，下次会话即生效
 
 ## 适用场景
 
