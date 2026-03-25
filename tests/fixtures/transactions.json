@@ -22,5 +22,143 @@
     "network": "mainnet",
     "expectedType": "NFT atomic sale",
     "notes": "Canonical atomic settlement example using UTXO all-or-nothing semantics."
+  },
+  {
+    "txid": "566d9bcc1ed4b75864e7c05d036adb88ea4367eb57a323fa941209f3330848a0",
+    "network": "mainnet",
+    "expectedType": "FT Mint",
+    "notes": "No FT input. Outputs FT Code(500sat) + FT Tape(0sat). Contract ID = this txid."
+  },
+  {
+    "txid": "58653f5424b84108cecaf4d4d60c6f40033707a0c988e12afeeb39220d8bac68",
+    "network": "mainnet",
+    "expectedType": "FT Transfer",
+    "notes": "FT Code input -> new Code+Tape to receiver with FT change."
+  },
+  {
+    "txid": "f187ecfe9a2caeacd52cc9e4c03702390f959ac2e1426e77fbc0865fb8a4f95d",
+    "network": "mainnet",
+    "expectedType": "FT Burn",
+    "notes": "FT Code+Tape sent to EaterAddress. FT permanently exits circulation."
+  },
+  {
+    "txid": "3e724f11d2dd9c001f3e3fe6b9c6f760f54ab811e39937116ff26971ec9be1a3",
+    "network": "mainnet",
+    "expectedType": "NFT Collection Mint",
+    "notes": "OP_RETURN metadata + 7 slot UTXOs (100sat each). Not an NFT mint."
+  },
+  {
+    "txid": "86da8800a2e4fe6471250c0bf3d9751d1f306257c012110e524b866c506933c4",
+    "network": "mainnet",
+    "expectedType": "NFT Mint",
+    "notes": "Consumes collection slot. Outputs Code(200sat) + Hold(100sat) + Tape(0sat)."
+  },
+  {
+    "txid": "c524bdd943cdb5dc77e327248294a7790b7121c9cfdeeb84fb7225cbdc56be79",
+    "network": "mainnet",
+    "expectedType": "NFT Transfer",
+    "notes": "Code+Hold consumed and re-created with new Hold address."
+  },
+  {
+    "txid": "eb9b8ceab3e9d30a3ac43e20c920a03118208be613957d6ebbe3ad8b88261f97",
+    "network": "testnet",
+    "expectedType": "Pool MINT",
+    "notes": "Creates empty pool. poolNFT.Code(1000sat) + NTape(all zeros). No FT/FTLP outputs."
+  },
+  {
+    "txid": "67e65e79b78f5171b4646c15ecbfbae1d3f0084e4a270b2f7564d22de5aa332e",
+    "network": "testnet",
+    "expectedType": "Pool INIT",
+    "notes": "NTape amounts go from zero to nonzero. Creates full 6-UTXO pool structure."
+  },
+  {
+    "txid": "c8e74e57f57250aa26c1df608e4d2b56827c9d28083e8beb23c2e83d5a2bd4ea",
+    "network": "testnet",
+    "expectedType": "Pool Swap TBC->FT",
+    "notes": "Pool sat increases, user receives FTAbyAddress. ft_lp unchanged. No FTLP output."
+  },
+  {
+    "txid": "ccfbde951110543497f3885a36538fdb5a9e47fd0e9f5bbc4786a925efd561d6",
+    "network": "testnet",
+    "expectedType": "Pool Swap FT->TBC",
+    "notes": "Pool sat decreases, user receives P2PKH TBC. ft_lp unchanged."
+  },
+  {
+    "txid": "9ba1d3a03c1da7caa9da8bb84d179041f5b0139dd56d7a3b7ac1f9ba10d58429",
+    "network": "testnet",
+    "expectedType": "Pool Remove LP",
+    "notes": "FTLP burned to EaterAddress. User receives FTAbyAddress + P2PKH TBC."
+  },
+  {
+    "txid": "92f56f1f201faebccdf47c86a4566fd9d249902a4ae41121a3002aaf27c96e19",
+    "network": "testnet",
+    "expectedType": "Pool mergeFTinPool",
+    "notes": "Multiple FTAbyPool inputs merged. NTape amounts unchanged."
+  },
+  {
+    "txid": "11b578c9995b78139347e0fcdd4b61ee7ad13be683eff2e8bfd616b84dc953c4",
+    "network": "testnet",
+    "expectedType": "FTLP Merge",
+    "notes": "Independent FTLP merge. No Pool NFT involved. vout[0] ends with 02436f6465."
+  },
+  {
+    "txid": "1020d17bca80c49150808132553c11440eccd108cd574f792be65d2ddc751f21",
+    "network": "testnet",
+    "expectedType": "LP Burn",
+    "notes": "Independent FTLP burn. Pool NFT not involved, NTape unchanged."
+  },
+  {
+    "txid": "448817f4cdecb36ebd0a9ab77b3c86379e306ced7d76a1ff32aa2961e1591b89",
+    "network": "testnet",
+    "expectedType": "OrderBook Make Sell",
+    "notes": "P2PKH input. vout[0] = 946B sell script with TBC locked as saleVolume."
+  },
+  {
+    "txid": "2f34089919db6e04bb2f05a8afeca31920d477dd2463353b42ae073b32057a4c",
+    "network": "testnet",
+    "expectedType": "OrderBook Make Buy",
+    "notes": "FT input. vout[0] = 1010B buy script (300sat dust) + FT Code+Tape locked."
+  },
+  {
+    "txid": "8084a278b9c15ba2bdbcbbd739875f55801e79e15116570551ca0c142a333bad",
+    "network": "testnet",
+    "expectedType": "OrderBook Match",
+    "notes": "Buy+Sell+FT consumed. FT to seller, TBC to buyer, fees deducted."
+  },
+  {
+    "txid": "918beb1e17c17481f17195dbb806ac249714f38dc22476753b83f84d75a7a5a1",
+    "network": "testnet",
+    "expectedType": "HTLC Deploy",
+    "notes": "TBC locked to HTLC script with OP_IF OP_SHA256. hashlock + timelock 79017."
+  },
+  {
+    "txid": "1059d1fe4b9293a934a1559eab2db9a8a077f567942a89e60ea4d36c5d8c9a38",
+    "network": "testnet",
+    "expectedType": "HTLC Withdraw",
+    "notes": "Preimage revealed in scriptSig. OP_TRUE path. TBC to receiver."
+  },
+  {
+    "txid": "de431995727ecc7447ed0856cc7619d6f546b8134a1a78550cfcafcbddf3bdbc",
+    "network": "testnet",
+    "expectedType": "HTLC Refund",
+    "notes": "OP_FALSE path. nSequence=0xFFFFFFFE, locktime >= timelock. TBC back to sender."
+  },
+  {
+    "txid": "9b3656390910242c5c5454cb9aa895fb000b876542b5843ffcc5c008af6a7380",
+    "network": "testnet",
+    "expectedType": "MultiSig CreateWallet",
+    "notes": "Creates 2/3 multisig. nonstandard output with OP_CHECKMULTISIG + MTape."
+  },
+  {
+    "txid": "65a14814ccf5ec8f64e1f91075fcf843b1b5ecebfc2818a0c4038338e386291a",
+    "network": "testnet",
+    "expectedType": "PiggyBank Freeze",
+    "notes": "TBC locked to PiggyBank script. ad56ba signature. lockTime=29066."
+  },
+  {
+    "txid": "75a7b3b1e4e7cb37797102b66faecf22fb7f2f3dd3a94863c395885d221546e5",
+    "network": "testnet",
+    "expectedType": "PiggyBank Unfreeze",
+    "notes": "PiggyBank UTXO spent with nSequence<0xFFFFFFFF, locktime>=lockTime."
   }
 ]

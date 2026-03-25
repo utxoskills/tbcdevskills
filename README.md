@@ -1,92 +1,92 @@
 # TBC Dev Skills
 
-面向 TBC (TuringBitChain) 区块链开发者的 AI 技能包，让任何支持 skills 的 AI Agent 快速掌握 TBC 全栈开发知识。
+An AI skill pack for TBC (TuringBitChain) blockchain developers. Enables any skill-aware AI Agent to quickly master full-stack TBC development knowledge.
 
-## 这是什么
+## What is this
 
-一套结构化的 TBC 开发知识，可以被 [OpenClaw](https://openclaw.ai)、Cursor 插件系统等 AI Agent 入口加载使用。装上之后，Agent 就能：
+A structured set of TBC development knowledge that can be loaded by AI Agent platforms such as [OpenClaw](https://openclaw.ai), the Cursor plugin system, and others. Once installed, an Agent can:
 
-- 分析任意 TBC 交易，识别所有 9 种合约类型（FT、NFT、Pool、OrderBook、MultiSig、HTLC、StableCoin、PiggyBank 等）
-- 编写 TBC 智能合约交互代码（`tbc-lib-js` + `tbc-contract` SDK）
-- 理解 TBC 的 UTXO 模型、共识规则、P2P 协议、内存池策略
-- 调用 TuringWallet 插件钱包 API 构建 DApp
-- 掌握 UTXO 应用层开发模式（双花防护、链式交易、并发控制、碎片化管理）
-- 查询和调用 TBC 全节点 API
+- Analyze any TBC transaction and identify all 9 contract types (FT, NFT, Pool, OrderBook, MultiSig, HTLC, StableCoin, PiggyBank, etc.)
+- Write TBC smart contract interaction code (`tbc-lib-js` + `tbc-contract` SDK)
+- Understand TBC's UTXO model, consensus rules, P2P protocol, and mempool policies
+- Use the TuringWallet browser wallet API to build DApps
+- Apply UTXO application-layer patterns (double-spend protection, chained transactions, concurrency control, fragmentation management)
+- Query and call TBC full-node APIs
 
-## 结构
+## Structure
 
-### 多 skill 入口
+### Skills
 
-| 路径 | 说明 |
-|------|------|
-| `skills/transaction-analysis/` | 交易识别、原子交换、支付 vs 找零、资产流向分析 |
-| `skills/contract-patterns/` | FT / NFT / Pool / FTLP / OrderBook / HTLC / MultiSig 等结构区分 |
-| `skills/sdk-coding/` | `tbc-lib-js` + `tbc-contract` SDK 编码与构造模式 |
-| `skills/utxo-design/` | UTXO 原子性、并发控制、溯源、碎片化管理 |
-| `skills/node-internals/` | 共识、mempool、P2P、DAA、KYC 矿工验证 |
-| `skills/turingwallet-api/` | TuringWallet 浏览器钱包 API |
+| Path | Description |
+|------|-------------|
+| `skills/transaction-analysis/` | Transaction identification, atomic swaps, payment vs change, asset flow analysis, full-contract vin/vout specifications |
+| `skills/contract-patterns/` | FT / NFT / Pool / FTLP / OrderBook / HTLC / MultiSig / StableCoin / PiggyBank structure differentiation, sub-type index |
+| `skills/sdk-coding/` | `tbc-lib-js` + `tbc-contract` SDK coding and construction patterns |
+| `skills/utxo-design/` | UTXO atomicity, concurrency control, provenance tracing, fragmentation management |
+| `skills/node-internals/` | Consensus, mempool, P2P, DAA, KYC miner verification |
+| `skills/turingwallet-api/` | TuringWallet browser wallet API |
 
-### 配套入口
+### Companion entry points
 
-| 路径 | 说明 |
-|------|------|
-| `commands/analyze-tx.md` | 高级交易分析入口 |
-| `commands/trace-asset.md` | 资产溯源入口 |
-| `commands/write-tbc-code.md` | TBC 代码生成入口 |
-| `agents/tbc-analyst.md` | 专用 TBC 分析 agent |
-| `docs/api-reference.md` | API 文档入口（兼容包装） |
-| `docs/code-reference.md` | 代码示例入口（兼容包装） |
-| `tests/fixtures/` | 交易识别回归样例 |
+| Path | Description |
+|------|-------------|
+| `commands/analyze-tx.md` | Advanced transaction analysis entry |
+| `commands/trace-asset.md` | Asset provenance tracing entry |
+| `commands/write-tbc-code.md` | TBC code generation entry |
+| `agents/tbc-analyst.md` | Dedicated TBC analyst agent |
+| `docs/api-reference.md` | API documentation entry (compatibility wrapper) |
+| `docs/code-reference.md` | Code examples entry (compatibility wrapper) |
+| `tests/fixtures/` | Transaction classification regression fixtures (covering all 9 contract types) |
 
-### 兼容层
+### Compatibility layer
 
-| 路径 | 说明 |
-|------|------|
-| `tbc-dev/SKILL.md` | 原始完整技能，继续保留，避免旧工作流失效 |
-| `tbc-dev/api-reference.md` | 原始 API 全量文档 |
-| `tbc-dev/code-reference.md` | 原始代码示例文档 |
+| Path | Description |
+|------|-------------|
+| `tbc-dev/SKILL.md` | Original complete skill, retained to avoid breaking legacy workflows |
+| `tbc-dev/api-reference.md` | Original full API documentation |
+| `tbc-dev/code-reference.md` | Original code examples documentation |
 
-## 安装
+## Installation
 
-### 方式 1：Cursor 插件（Marketplace 风格）
+### Option 1: Cursor Plugin (Marketplace style)
 
-本仓库已包含 `.cursor-plugin/plugin.json`，符合 [Cursor 插件规范](https://cursor.com/docs/reference/plugins)。
+This repo includes `.cursor-plugin/plugin.json`, conforming to the [Cursor plugin spec](https://cursor.com/docs/reference/plugins).
 
-- **从 Cursor 安装**：在 Cursor 中打开 Plugins 面板，搜索 `tbc-developer` 或添加 Team Marketplace（见下方）
-- **Team Marketplace**：在 Cursor 团队后台 → Settings → Plugins → Team Marketplaces → Import，填入 `https://github.com/utxoskills/tbcdevskills`
-- **本地试用**：将仓库 clone 到本地，在 Cursor 中添加 Team Marketplace 并选择该目录
+- **Install from Cursor**: Open the Plugins panel in Cursor, search for `tbc-developer` or add via Team Marketplace (see below)
+- **Team Marketplace**: Go to Cursor team admin -> Settings -> Plugins -> Team Marketplaces -> Import, enter `https://github.com/utxoskills/tbcdevskills`
+- **Local trial**: Clone the repo locally, then add it as a Team Marketplace directory in Cursor
 
-### 方式 2：OpenClaw
+### Option 2: OpenClaw
 
 ```bash
 npx skills add utxoskills/tbcdevskills
 ```
 
-### 方式 3：手动软链接
+### Option 3: Manual symlink
 
 ```bash
 git clone https://github.com/utxoskills/tbcdevskills.git
 ln -sf $(pwd)/tbcdevskills/tbc-dev ~/.openclaw/workspace/skills/tbc-dev
 ```
 
-## 更新
+## Updates
 
-- **Cursor**：插件更新需在 [cursor.com/marketplace/publish](https://cursor.com/marketplace/publish) 提交新版本，审核通过后用户可在 Plugins 面板看到更新
-- **Team Marketplace**：仓库 `git push` 后，团队管理员在后台刷新/重新导入即可拉取最新内容
-- **OpenClaw / 软链接**：`cd tbcdevskills && git pull`，下次会话即生效
+- **Cursor**: Plugin updates require submitting a new version at [cursor.com/marketplace/publish](https://cursor.com/marketplace/publish). Users will see the update in the Plugins panel after review.
+- **Team Marketplace**: After `git push`, the team admin can refresh/re-import in the admin panel to pull the latest content.
+- **OpenClaw / symlink**: Run `cd tbcdevskills && git pull` and the changes take effect in the next session.
 
-## 设计原则
+## Design principles
 
-- **内容不丢**：原始 `tbc-dev/` 目录继续保留
-- **结构更像插件产品**：新增 `skills/`、`commands/`、`agents/`、`docs/`、`tests/`
-- **效果不退化**：多 skill 结构用于更好的发现与路由，旧的完整知识库继续作为兜底参考
+- **No content loss**: The original `tbc-dev/` directory is retained
+- **Product-shaped structure**: Added `skills/`, `commands/`, `agents/`, `docs/`, `tests/`
+- **No regression**: The multi-skill structure improves discovery and routing; the legacy complete knowledge base remains as a fallback reference
 
-## 适用场景
+## Use cases
 
-- TBC DApp 开发者想让 AI 辅助写合约交互代码
-- 想快速分析链上交易属于哪种合约类型
-- 需要 AI 理解 TBC 与 BTC/BSV 的共识差异
-- 构建基于 TuringWallet 的浏览器端应用
+- TBC DApp developers wanting AI-assisted contract interaction code
+- Quick classification of on-chain transactions by contract type
+- AI understanding of TBC vs BTC/BSV consensus differences
+- Building browser-based applications with TuringWallet
 
 ## License
 
